@@ -64,7 +64,7 @@ pub trait ControlChannelExt<D: channel::Direction>: UsbChannel<channel::Control,
         };
 
         self.control_in(&packet, &mut buf).await?;
-        trace!("Descriptor {}: {=[u8]}", core::any::type_name::<T>(), buf);
+        trace!("Descriptor {}: {:02x?}", core::any::type_name::<T>(), buf);
 
         T::try_from_bytes(&buf).map_err(|e| {
             // TODO: Log error or make descriptor error not generic
@@ -215,7 +215,7 @@ pub trait ControlChannelExt<D: channel::Direction>: UsbChannel<channel::Control,
                 {
                     Ok(desc) => break desc.max_packet_size0,
                     Err(e) => {
-                        warn!("Request descriptor error: {}, retries: {}", e, max_retries);
+                        warn!("Request descriptor error: {:?}, retries: {}", e, max_retries);
                         if max_retries > 0 {
                             max_retries -= 1;
                             Timer::after_millis(1).await;
