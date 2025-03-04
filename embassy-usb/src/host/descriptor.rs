@@ -293,13 +293,15 @@ impl<'a> Iterator for EndpointIterator<'a> {
             None
         } else {
             let mut working_buffer = &self.iface_desc.buffer[self.buffer_idx..];
+            let mut offset = 0;
             if let Some(endpoint) = InterfaceDescriptor::identify_descriptor::<EndpointDescriptor>(working_buffer)
                 .and_then(|i| {
+                    offset = i;
                     working_buffer = &working_buffer[i..];
                     EndpointDescriptor::try_from_bytes(working_buffer).ok()
                 })
             {
-                self.buffer_idx += endpoint.len as usize;
+                self.buffer_idx += offset + endpoint.len as usize;
                 self.index += 1;
                 return Some(endpoint);
             }
