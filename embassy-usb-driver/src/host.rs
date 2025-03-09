@@ -141,6 +141,8 @@ pub trait UsbHostDriver: Sized {
     type Channel<T: channel::Type, D: channel::Direction>: UsbChannel<T, D>;
 
     /// Wait for device connect or disconnect
+    ///
+    /// When connected, this function must issue a bus reset before the speed is reported
     async fn wait_for_device_event(&self) -> DeviceEvent;
 
     /// Issue a bus reset.

@@ -308,9 +308,6 @@ impl<D: channel::Direction, C> ControlChannelExt<D> for C where C: UsbChannel<ch
 pub trait UsbHostBusExt: UsbHostDriver {
     /// Enumerates the root port of the device
     async fn enumerate_root(&mut self, speed: Speed, new_device_address: u8) -> Result<EnumerationInfo, HostError> {
-        // Need to reset bus to initialize device?
-        self.bus_reset().await;
-
         let mut channel = self.alloc_channel::<Control, InOut>(
             0,
             &EndpointInfo::new(0.into(), EndpointType::Control, speed.max_packet_size()),
