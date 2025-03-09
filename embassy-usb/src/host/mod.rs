@@ -272,7 +272,10 @@ pub trait ControlChannelExt<D: channel::Direction>: UsbChannel<channel::Control,
             .await?;
 
         let total_len = cfg_desc_short.total_len as usize;
-        let mut desc_buffer = [0u8; 256];
+        let mut desc_buffer = [0u8; MAX_DESCRIPTOR_SIZE];
+        if total_len > MAX_DESCRIPTOR_SIZE {
+            return Err(HostError::Other("Descriptor buffer too small"));
+        }
         let dest_buffer = &mut desc_buffer[0..total_len];
 
         self.request_descriptor_bytes::<ConfigurationDescriptor>(dest_buffer)

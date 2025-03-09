@@ -4,6 +4,8 @@ use heapless::Vec;
 
 type StringIndex = u8;
 
+pub(crate) const MAX_DESCRIPTOR_SIZE: usize = 512;
+
 /// First 8 bytes of the DeviceDescriptor. This is used to figure out the `max_packet_size0` value to reconfigure channel 0.
 /// All USB devices support max_packet_size0=8 which is why the first 8 bytes of the descriptor can always be read.
 #[allow(missing_docs)]
@@ -48,7 +50,7 @@ pub struct ConfigurationDescriptor {
 
     /// All additional bytes end up in this buffer.
     /// This includes the interface descriptors
-    pub buffer: [u8; 256],
+    pub buffer: [u8; MAX_DESCRIPTOR_SIZE],
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -156,7 +158,7 @@ impl USBDescriptor for ConfigurationDescriptor {
             return Err(());
         }
         let descr_len = bytes[0];
-        let mut buffer = [0u8; 256];
+        let mut buffer = [0u8; MAX_DESCRIPTOR_SIZE];
         let rest_of_desc = &bytes[(descr_len as usize)..];
         buffer[..rest_of_desc.len()].copy_from_slice(rest_of_desc);
 
@@ -567,20 +569,13 @@ mod test {
         // bRefresh, bSynchAddress (those two bytes are set to 99 in the test bytes below to make them easy to identify).
         let desc_bytes = [
             // Configuration descriptor
-            9, 2, 68, 0, 2, 1, 0, 160, 101,
-            // Interface 0
-            9, 4, 0, 0, 1, 3, 1, 1, 0,
-            // HID Descriptor
-            9, 33, 16, 1, 0, 1, 34, 63, 0,
-            // Endpoint 1 (extended for MIDI 2.0)
-            9, 5, 129, 3, 8, 0, 1, 99, 99,
-            // Interface 1
-            9, 4, 1, 0, 2, 3, 1, 0, 0,
-            // HID Descriptor
-            9, 33, 16, 1, 0, 1, 34, 39, 0,
-            // Endpoint 1
-            7, 5, 131, 3, 64, 0, 1,
-            // Endpoint 2
+            9, 2, 68, 0, 2, 1, 0, 160, 101, // Interface 0
+            9, 4, 0, 0, 1, 3, 1, 1, 0, // HID Descriptor
+            9, 33, 16, 1, 0, 1, 34, 63, 0, // Endpoint 1 (extended for MIDI 2.0)
+            9, 5, 129, 3, 8, 0, 1, 99, 99, // Interface 1
+            9, 4, 1, 0, 2, 3, 1, 0, 0, // HID Descriptor
+            9, 33, 16, 1, 0, 1, 34, 39, 0, // Endpoint 1
+            7, 5, 131, 3, 64, 0, 1, // Endpoint 2
             7, 5, 3, 3, 64, 0, 1,
         ];
 
@@ -606,7 +601,6 @@ mod test {
         let endpoints = interface1.parse_endpoints::<2>();
         assert_eq!(endpoints.len(), 2);
     }
-
 
     #[test]
     fn test_parse_custom_descriptor() {
