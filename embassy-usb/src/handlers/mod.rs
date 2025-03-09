@@ -29,6 +29,7 @@ impl StaticHandlerSpec {
     }
 }
 
+#[derive(Debug)]
 pub struct EnumerationInfo {
     /// Device address
     pub device_address: u8,
