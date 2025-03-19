@@ -2,7 +2,7 @@ use crate::descriptor::descriptor_type;
 use embassy_usb_driver::{Direction, EndpointInfo, EndpointType};
 use heapless::Vec;
 
-type StringIndex = u8;
+pub(crate) type StringIndex = u8;
 
 pub(crate) const MAX_DESCRIPTOR_SIZE: usize = 512;
 
@@ -196,6 +196,29 @@ impl<'a> Iterator for InterfaceIterator<'a> {
     }
 }
 
+pub struct DescriptorIterator<'a> {
+    buffer: &'a [u8],
+}
+
+impl<'a> Iterator for DescriptorIterator<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.len() == 0 {
+            None
+        } else {
+            let len = self.buffer[0] as usize;
+            if len == 0 {
+                None
+            } else {
+                let res = &self.buffer[..len];
+                self.buffer = &self.buffer[len..];
+                Some(res)
+            }
+        }
+    }
+}
+
 impl ConfigurationDescriptor {
     pub fn iter_interface<'a>(&'a self) -> InterfaceIterator<'a> {
         InterfaceIterator {
@@ -203,6 +226,10 @@ impl ConfigurationDescriptor {
             index: 0,
             cfg_desc: self,
         }
+    }
+
+    pub fn iter_descriptors<'a>(&'a self) -> DescriptorIterator<'a> {
+        DescriptorIterator { buffer: &self.buffer }
     }
 
     /// Try to find and parse the interface with interface number `index`
