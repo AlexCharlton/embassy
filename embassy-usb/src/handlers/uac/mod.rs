@@ -5,7 +5,7 @@ pub mod descriptors;
 
 use super::{EnumerationInfo, RegisterError};
 use aligned::{Aligned, A4};
-use embassy_usb_driver::host::{channel, RequestType, SetupPacket, UsbChannel, UsbHostDriver};
+use embassy_usb_driver::host::{channel, ChannelError, RequestType, SetupPacket, UsbChannel, UsbHostDriver};
 use embassy_usb_driver::{EndpointInfo, EndpointType};
 use heapless::Vec;
 
@@ -13,6 +13,12 @@ const MAX_RANGES: usize = 16;
 
 pub struct UacHandler<H: UsbHostDriver> {
     control_channel: H::Channel<channel::Control, channel::InOut>,
+}
+
+#[derive(Debug)]
+pub enum RequestError {
+    RequestFailed(ChannelError),
+    InvalidResponse,
 }
 
 impl<H: UsbHostDriver> UacHandler<H> {
@@ -31,7 +37,7 @@ impl<H: UsbHostDriver> UacHandler<H> {
             .control_interface
             .terminal_descriptors
             .iter()
-            .find(|(id, t)| match t {
+            .find(|(_, t)| match t {
                 descriptors::TerminalDescriptor::Input(input) => {
                     input.terminal_type == descriptors::TerminalType::UsbStreaming
                 }
@@ -41,7 +47,7 @@ impl<H: UsbHostDriver> UacHandler<H> {
 
         debug!("[UAC] Input Terminal: {:#?}", input_terminal);
 
-        let mut control_channel = host.alloc_channel::<channel::Control, channel::InOut>(
+        let control_channel = host.alloc_channel::<channel::Control, channel::InOut>(
             enum_info.device_address,
             &EndpointInfo::new(
                 0.into(),
@@ -50,23 +56,178 @@ impl<H: UsbHostDriver> UacHandler<H> {
             ),
             enum_info.ls_over_fs,
         )?;
+        let mut slf = Self { control_channel };
 
+        let sampling_freq = slf.get_sampling_freq(input_terminal.1.clock_source_id()).await;
+        debug!("[UAC] Current Sampling Frequency: {:?}", sampling_freq);
+
+        Ok(slf)
+    }
+
+    pub async fn get_sampling_freq(&mut self, terminal_id: u8) -> Result<u32, RequestError> {
+        self.get_curr_entity3(
+            codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL,
+            0,
+            terminal_id,
+            0,
+        )
+        .await
+    }
+
+    pub async fn get_curr_entity1(
+        &mut self,
+        control_selector: u16,
+        channel: u8,
+        entity: u8,
+        interface: u8,
+    ) -> Result<u8, RequestError> {
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_INTERFACE,
+            request: codes::request_code::CUR,
+            value: (channel as u16) << 8 | control_selector as u16,
+            index: (entity as u16) << 8 | interface as u16,
+            length: 1,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; 1]);
+
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        Ok(buf[0])
+    }
+
+    pub async fn get_curr_entity2(
+        &mut self,
+        control_selector: u16,
+        channel: u8,
+        entity: u8,
+        interface: u8,
+    ) -> Result<u16, RequestError> {
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_INTERFACE,
+            request: codes::request_code::CUR,
+            value: (channel as u16) << 8 | control_selector,
+            index: (entity as u16) << 8 | interface as u16,
+            length: 2,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; 2]);
+
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        Ok(u16::from_le_bytes([buf[0], buf[1]]))
+    }
+
+    pub async fn get_curr_entity3(
+        &mut self,
+        control_selector: u16,
+        channel: u8,
+        entity: u8,
+        interface: u8,
+    ) -> Result<u32, RequestError> {
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_INTERFACE,
+            request: codes::request_code::CUR,
+            value: (channel as u16) << 8 | control_selector,
+            index: (entity as u16) << 8 | interface as u16,
+            length: 4,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; 4]);
+
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        Ok(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
+    }
+
+    pub async fn get_range_entity1(
+        &mut self,
+        control_selector: u16,
+        channel: u8,
+        entity: u8,
+        interface: u8,
+    ) -> Result<Layout1ParameterBlock, RequestError> {
         let packet = SetupPacket {
             request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_INTERFACE,
             request: codes::request_code::RANGE,
-            value: codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL,
-            index: input_terminal.1.clock_source_id() as u16,
+            value: (channel as u16) << 8 | control_selector,
+            index: (entity as u16) << 8 | interface as u16,
+            length: size_of::<Layout1ParameterBlock>() as u16,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; size_of::<Layout1ParameterBlock>()]);
+
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        let layout = Layout1ParameterBlock::try_from_bytes(buf.as_slice()).ok_or(RequestError::InvalidResponse)?;
+
+        Ok(layout)
+    }
+
+    pub async fn get_range_entity2(
+        &mut self,
+        control_selector: u16,
+        channel: u8,
+        entity: u8,
+        interface: u8,
+    ) -> Result<Layout2ParameterBlock, RequestError> {
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_INTERFACE,
+            request: codes::request_code::RANGE,
+            value: (channel as u16) << 8 | control_selector,
+            index: (entity as u16) << 8 | interface as u16,
+            length: size_of::<Layout2ParameterBlock>() as u16,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; size_of::<Layout2ParameterBlock>()]);
+
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        let layout = Layout2ParameterBlock::try_from_bytes(buf.as_slice()).ok_or(RequestError::InvalidResponse)?;
+
+        Ok(layout)
+    }
+
+    pub async fn get_range_entity3(
+        &mut self,
+        control_selector: u16,
+        channel: u8,
+        entity: u8,
+        interface: u8,
+    ) -> Result<Layout3ParameterBlock, RequestError> {
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_INTERFACE,
+            request: codes::request_code::RANGE,
+            value: (channel as u16) << 8 | control_selector,
+            index: (entity as u16) << 8 | interface as u16,
             length: size_of::<Layout3ParameterBlock>() as u16,
         };
 
         let mut buf = Aligned::<A4, _>([0; size_of::<Layout3ParameterBlock>()]);
 
-        control_channel.control_out(&packet, buf.as_mut_slice()).await.unwrap();
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
 
-        let layout = Layout3ParameterBlock::try_from_bytes(buf.as_slice()).unwrap();
-        debug!("[UAC] Frequency Ranges: {:#?}", layout);
+        let layout = Layout3ParameterBlock::try_from_bytes(buf.as_slice()).ok_or(RequestError::InvalidResponse)?;
 
-        Ok(Self { control_channel })
+        Ok(layout)
     }
 }
 
