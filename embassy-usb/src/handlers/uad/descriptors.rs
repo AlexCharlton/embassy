@@ -1,10 +1,13 @@
 use super::codes::*;
 use crate::host::descriptor::{ConfigurationDescriptor, EndpointDescriptor, StringIndex, USBDescriptor};
 use core::iter::Peekable;
-use heapless::Vec;
+use heapless::{FnvIndexMap, Vec};
 
 const MAX_AUDIO_STREAMING_INTERFACES: usize = 16;
 const MAX_ALTERNATE_SETTINGS: usize = 4;
+const MAX_CLOCK_DESCRIPTORS: usize = 8;
+const MAX_UNIT_DESCRIPTORS: usize = 16;
+const MAX_TERMINAL_DESCRIPTORS: usize = 16;
 
 #[derive(Debug, PartialEq)]
 pub struct AudioInterfaceCollection {
@@ -15,7 +18,7 @@ pub struct AudioInterfaceCollection {
 
 #[derive(Debug, PartialEq)]
 pub enum AudioInterfaceError {
-    BufferFull,
+    BufferFull(&'static str),
     MissingControlInterface,
     MissingControlInterfaceHeader,
     InvalidDescriptor,
@@ -65,7 +68,7 @@ impl AudioInterfaceCollection {
                         }
                         streaming_interfaces
                             .push(Self::collect_audio_streaming_interface(&mut descriptors, interfaces)?)
-                            .map_err(|_| AudioInterfaceError::BufferFull)?;
+                            .map_err(|_| AudioInterfaceError::BufferFull("Too many audio streaming interfaces"))?;
                     }
                     _ => {
                         trace!(
@@ -126,7 +129,7 @@ impl AudioInterfaceCollection {
                 }
                 interface_descriptors
                     .push(interface)
-                    .map_err(|_| AudioInterfaceError::BufferFull)?;
+                    .map_err(|_| AudioInterfaceError::BufferFull("Too many interfaces"))?;
 
                 // Do we have contiguous (alternate) interfaces?
                 while let Some(next_desc) = descriptors.peek() {
@@ -140,7 +143,7 @@ impl AudioInterfaceCollection {
                             descriptors.next(); // consume the next descriptor
                             interface_descriptors
                                 .push(next_interface)
-                                .map_err(|_| AudioInterfaceError::BufferFull)?;
+                                .map_err(|_| AudioInterfaceError::BufferFull("Too many interfaces"))?;
                             continue;
                         }
                     }
@@ -170,9 +173,54 @@ impl AudioInterfaceCollection {
                 "Found Audio Control Header: version={}.{}",
                 header.audio_device_class.0, header.audio_device_class.1
             );
+            let mut clock_descriptors = FnvIndexMap::new();
+            let mut unit_descriptors = FnvIndexMap::new();
+            let mut terminal_descriptors = FnvIndexMap::new();
+            let mut interrupt_endpoint_descriptor = None;
+            while let Some(desc) = descriptors.peek() {
+                if desc.len() > 2 {
+                    match desc[1] {
+                        descriptor_type::CS_INTERFACE => {
+                            let desc = descriptors.next().unwrap();
+                            match ClockDescriptor::try_from_bytes(desc) {
+                                Ok(clock) => {
+                                    clock_descriptors
+                                        .insert(clock.clock_id(), clock)
+                                        .map_err(|_| AudioInterfaceError::BufferFull("Too many clock descriptors"))?;
+                                }
+                                // Ignore invalid descriptors: We don't know if we even have a clock descriptor
+                                Err(AudioInterfaceError::InvalidDescriptor) => {}
+                                Err(e) => return Err(e),
+                            }
+                            if let Ok(terminal) = TerminalDescriptor::try_from_bytes(desc) {
+                                terminal_descriptors
+                                    .insert(terminal.terminal_id(), terminal)
+                                    .map_err(|_| AudioInterfaceError::BufferFull("Too many terminal descriptors"))?;
+                            }
+                            if let Ok(unit) = UnitDescriptor::try_from_bytes(desc) {
+                                unit_descriptors
+                                    .insert(unit.unit_id(), unit)
+                                    .map_err(|_| AudioInterfaceError::BufferFull("Too many unit descriptors"))?;
+                            }
+                        }
+                        descriptor_type::CS_ENDPOINT => {
+                            if let Ok(desc) = EndpointDescriptor::try_from_bytes(descriptors.next().unwrap()) {
+                                interrupt_endpoint_descriptor = Some(desc);
+                            }
+                        }
+                        _ => break,
+                    }
+                } else {
+                    break;
+                }
+            }
             Ok(AudioControlInterface {
                 interface_descriptors: interfaces,
                 header_descriptor: header,
+                interrupt_endpoint_descriptor: interrupt_endpoint_descriptor,
+                clock_descriptors: clock_descriptors,
+                unit_descriptors: unit_descriptors,
+                terminal_descriptors: terminal_descriptors,
             })
         } else {
             Err(AudioInterfaceError::MissingControlInterfaceHeader)
@@ -237,7 +285,7 @@ pub struct InterfaceAssociationDescriptor {
     pub class: u8,
     pub subclass: u8,
     pub protocol: u8,
-    pub name: StringIndex,
+    pub interface_name: StringIndex,
 }
 
 impl USBDescriptor for InterfaceAssociationDescriptor {
@@ -258,7 +306,7 @@ impl USBDescriptor for InterfaceAssociationDescriptor {
             class: bytes[4],
             subclass: bytes[5],
             protocol: bytes[6],
-            name: bytes[7],
+            interface_name: bytes[7],
         })
     }
 }
@@ -310,12 +358,17 @@ impl USBDescriptor for InterfaceDescriptor {
     }
 }
 
+//--------------------------------------------------------------------------------------------------
+// Audio Control
+
 #[derive(Debug, PartialEq)]
 pub struct AudioControlInterface {
     pub interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
     pub header_descriptor: AudioControlHeaderDescriptor,
-    // TODO: Endpoint descriptors
-    // TODO: Clock, unit, terminal descriptors
+    pub interrupt_endpoint_descriptor: Option<EndpointDescriptor>,
+    pub clock_descriptors: FnvIndexMap<u8, ClockDescriptor, MAX_CLOCK_DESCRIPTORS>,
+    pub unit_descriptors: FnvIndexMap<u8, UnitDescriptor, MAX_UNIT_DESCRIPTORS>,
+    pub terminal_descriptors: FnvIndexMap<u8, TerminalDescriptor, MAX_TERMINAL_DESCRIPTORS>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -347,6 +400,408 @@ impl USBDescriptor for AudioControlHeaderDescriptor {
         })
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClockDescriptor {
+    Source(ClockSourceDescriptor),
+    Selector(ClockSelectorDescriptor),
+    Multiplier(ClockMultiplierDescriptor),
+}
+
+impl ClockDescriptor {
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, AudioInterfaceError> {
+        if bytes.len() < 4 {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[1] != descriptor_type::CS_INTERFACE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        match bytes[2] {
+            ac_descriptor::CLOCK_SOURCE => Ok(Self::Source(ClockSourceDescriptor::try_from_bytes(bytes)?)),
+            ac_descriptor::CLOCK_SELECTOR => Ok(Self::Selector(ClockSelectorDescriptor::try_from_bytes(bytes)?)),
+            ac_descriptor::CLOCK_MULTIPLIER => Ok(Self::Multiplier(ClockMultiplierDescriptor::try_from_bytes(bytes)?)),
+            _ => Err(AudioInterfaceError::InvalidDescriptor),
+        }
+    }
+
+    pub fn clock_id(&self) -> u8 {
+        match self {
+            Self::Source(desc) => desc.clock_id,
+            Self::Selector(desc) => desc.clock_id,
+            Self::Multiplier(desc) => desc.clock_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockSourceDescriptor {
+    pub clock_id: u8,
+    pub attributes_bitmap: u8,
+    pub controls_bitmap: u8,
+    pub associated_terminal: u8,
+    pub clock_name: StringIndex,
+}
+
+impl USBDescriptor for ClockSourceDescriptor {
+    const SIZE: usize = 8;
+    const DESC_TYPE: u8 = descriptor_type::CS_INTERFACE;
+    type Error = AudioInterfaceError;
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() < Self::SIZE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[1] != Self::DESC_TYPE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[2] != ac_descriptor::CLOCK_SOURCE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        Ok(Self {
+            clock_id: bytes[3],
+            attributes_bitmap: bytes[4],
+            controls_bitmap: bytes[5],
+            associated_terminal: bytes[6],
+            clock_name: bytes[7],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockSelectorDescriptor {
+    pub clock_id: u8,
+    pub source_ids: Vec<u8, MAX_CLOCK_DESCRIPTORS>,
+    pub controls_bitmap: u8,
+    pub clock_name: StringIndex,
+}
+
+impl ClockSelectorDescriptor {
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, AudioInterfaceError> {
+        if bytes.len() < 7 {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[1] != descriptor_type::CS_INTERFACE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[2] != ac_descriptor::CLOCK_SELECTOR {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        let mut source_ids = Vec::new();
+        let num_source_ids = bytes[4] as usize;
+        for i in 0..num_source_ids {
+            source_ids
+                .push(bytes[5 + i])
+                .map_err(|_| AudioInterfaceError::BufferFull("Too many clock source ids"))?;
+        }
+        Ok(Self {
+            clock_id: bytes[3],
+            source_ids,
+            controls_bitmap: bytes[5 + num_source_ids as usize],
+            clock_name: bytes[6 + num_source_ids as usize],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClockMultiplierDescriptor {
+    pub clock_id: u8,
+    pub source_id: u8,
+    pub controls_bitmap: u8,
+    pub clock_name: StringIndex,
+}
+
+impl USBDescriptor for ClockMultiplierDescriptor {
+    const SIZE: usize = 7;
+    const DESC_TYPE: u8 = descriptor_type::CS_INTERFACE;
+    type Error = AudioInterfaceError;
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, AudioInterfaceError> {
+        if bytes.len() < Self::SIZE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[1] != Self::DESC_TYPE {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        if bytes[2] != ac_descriptor::CLOCK_MULTIPLIER {
+            return Err(AudioInterfaceError::InvalidDescriptor);
+        }
+        Ok(Self {
+            clock_id: bytes[3],
+            source_id: bytes[4],
+            controls_bitmap: bytes[5],
+            clock_name: bytes[6],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TerminalDescriptor {
+    Input(InputTerminalDescriptor),
+    Output(OutputTerminalDescriptor),
+}
+
+impl TerminalDescriptor {
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, ()> {
+        if bytes.len() < 3 {
+            return Err(());
+        }
+        if bytes[1] != descriptor_type::CS_INTERFACE {
+            return Err(());
+        }
+        match bytes[2] {
+            ac_descriptor::INPUT_TERMINAL => Ok(Self::Input(InputTerminalDescriptor::try_from_bytes(bytes)?)),
+            ac_descriptor::OUTPUT_TERMINAL => Ok(Self::Output(OutputTerminalDescriptor::try_from_bytes(bytes)?)),
+            _ => Err(()),
+        }
+    }
+
+    pub fn terminal_id(&self) -> u8 {
+        match self {
+            Self::Input(desc) => desc.terminal_id,
+            Self::Output(desc) => desc.terminal_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalType {
+    Unknown(u16),
+
+    // USB Terminal Types
+    UsbUndefined,
+    UsbStreaming,
+    UsbVendorSpecific,
+
+    // Input Terminal Types
+    InputUndefined,
+    Microphone,
+    DesktopMicrophone,
+    PersonalMicrophone,
+    OmniMicrophone,
+    MicrophoneArray,
+    ProcessingMicrophoneArray,
+
+    // Output Terminal Types
+    OutputUndefined,
+    Speaker,
+    Headphones,
+    HeadMountedDisplay,
+    DesktopSpeaker,
+    RoomSpeaker,
+    CommunicationSpeaker,
+    LowFrequencyEffectsSpeaker,
+
+    // Bi-directional Terminal Types
+    BiDirectionalUndefined,
+    Handset,
+    Headset,
+    SpeakerPhone,
+    EchoSuppressing,
+    EchoCanceling,
+
+    // Telephony Terminal Types
+    TelephonyUndefined,
+    PhoneLine,
+    Telephone,
+    DownLinePhone,
+
+    // External Terminal Types
+    ExternalUndefined,
+    AnalogConnector,
+    DigitalAudioInterface,
+    LineConnector,
+    LegacyAudioConnector,
+    SpdifInterface,
+    Da1394Stream,
+    DvdAudioStream,
+    AvcStream,
+}
+
+fn terminal_type_from_u16(terminal_type: u16) -> TerminalType {
+    use crate::handlers::uad::codes::terminal_type::*;
+    use TerminalType::*;
+
+    match terminal_type {
+        usb::UNDEFINED => UsbUndefined,
+        usb::STREAMING => UsbStreaming,
+        usb::VENDOR_SPECIFIC => UsbVendorSpecific,
+
+        input::UNDEFINED => InputUndefined,
+        input::MICROPHONE => Microphone,
+        input::DESKTOP_MICROPHONE => DesktopMicrophone,
+        input::PERSONAL_MICROPHONE => PersonalMicrophone,
+        input::OMNI_DIRECTIONAL_MICROPHONE => OmniMicrophone,
+        input::MICROPHONE_ARRAY => MicrophoneArray,
+        input::PROCESSING_MICROPHONE_ARRAY => ProcessingMicrophoneArray,
+
+        output::UNDEFINED => OutputUndefined,
+        output::SPEAKER => Speaker,
+        output::HEADPHONES => Headphones,
+        output::HEAD_MOUNTED_DISPLAY_AUDIO => HeadMountedDisplay,
+        output::DESKTOP_SPEAKER => DesktopSpeaker,
+        output::ROOM_SPEAKER => RoomSpeaker,
+        output::COMMUNICATION_SPEAKER => CommunicationSpeaker,
+        output::LOW_FREQUENCY_EFFECTS_SPEAKER => LowFrequencyEffectsSpeaker,
+
+        bidirectional::UNDEFINED => BiDirectionalUndefined,
+        bidirectional::HANDSET => Handset,
+        bidirectional::HEADSET => Headset,
+        bidirectional::SPEAKERPHONE_NO_ECHO => SpeakerPhone,
+        bidirectional::ECHO_SUPPRESSING_SPEAKERPHONE => EchoSuppressing,
+        bidirectional::ECHO_CANCELING_SPEAKERPHONE => EchoCanceling,
+
+        telephony::UNDEFINED => TelephonyUndefined,
+        telephony::PHONE_LINE => PhoneLine,
+        telephony::TELEPHONE => Telephone,
+        telephony::DOWN_LINE_PHONE => DownLinePhone,
+
+        external::UNDEFINED => ExternalUndefined,
+        external::ANALOG_CONNECTOR => AnalogConnector,
+        external::DIGITAL_AUDIO_INTERFACE => DigitalAudioInterface,
+        external::LINE_CONNECTOR => LineConnector,
+        external::LEGACY_AUDIO_CONNECTOR => LegacyAudioConnector,
+        external::SPDIF_INTERFACE => SpdifInterface,
+        external::DA_STREAM_1394 => Da1394Stream,
+        external::DV_STREAM_SOUNDTRACK_1394 => DvdAudioStream,
+        external::ADAT_LIGHTPIPE => AvcStream,
+
+        _ => Unknown(terminal_type),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputTerminalDescriptor {
+    pub terminal_id: u8,
+    pub terminal_type: TerminalType,
+    pub associated_terminal_id: u8,
+    pub clock_source_id: u8,
+    pub num_channels: u8,
+    pub channel_config_bitmap: u32,
+    pub channel_names: StringIndex,
+    pub controls_bitmap: u16,
+    pub terminal_name: StringIndex,
+}
+
+impl USBDescriptor for InputTerminalDescriptor {
+    const SIZE: usize = 17;
+    const DESC_TYPE: u8 = descriptor_type::CS_INTERFACE;
+    type Error = ();
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() != Self::SIZE {
+            return Err(());
+        }
+        if bytes[1] != Self::DESC_TYPE {
+            return Err(());
+        }
+        if bytes[2] != ac_descriptor::INPUT_TERMINAL {
+            return Err(());
+        }
+        Ok(Self {
+            terminal_id: bytes[3],
+            terminal_type: terminal_type_from_u16(u16::from_le_bytes([bytes[4], bytes[5]])),
+            associated_terminal_id: bytes[6],
+            clock_source_id: bytes[7],
+            num_channels: bytes[8],
+            channel_config_bitmap: u32::from_le_bytes([bytes[9], bytes[10], bytes[11], bytes[12]]),
+            channel_names: bytes[13],
+            controls_bitmap: u16::from_le_bytes([bytes[14], bytes[15]]),
+            terminal_name: bytes[16],
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputTerminalDescriptor {
+    pub terminal_id: u8,
+    pub terminal_type: TerminalType,
+    pub associated_terminal_id: u8,
+    pub source_id: u8,
+    pub clock_source_id: u8,
+    pub controls_bitmap: u16,
+    pub terminal_name: StringIndex,
+}
+
+impl USBDescriptor for OutputTerminalDescriptor {
+    const SIZE: usize = 12;
+    const DESC_TYPE: u8 = descriptor_type::CS_INTERFACE;
+    type Error = ();
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() != Self::SIZE {
+            return Err(());
+        }
+        if bytes[1] != Self::DESC_TYPE {
+            return Err(());
+        }
+        if bytes[2] != ac_descriptor::OUTPUT_TERMINAL {
+            return Err(());
+        }
+        Ok(Self {
+            terminal_id: bytes[3],
+            terminal_type: terminal_type_from_u16(u16::from_le_bytes([bytes[4], bytes[5]])),
+            associated_terminal_id: bytes[6],
+            source_id: bytes[7],
+            clock_source_id: bytes[8],
+            controls_bitmap: u16::from_le_bytes([bytes[9], bytes[10]]),
+            terminal_name: bytes[11],
+        })
+    }
+}
+
+// TODO: Implement unit descriptors
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnitDescriptor {
+    Mixer(u8),
+    Selector(u8),
+    Feature(u8),
+    Processing(u8),
+    Effect(u8),
+    SampleRateConverter(u8),
+    Extension(u8),
+}
+
+impl USBDescriptor for UnitDescriptor {
+    const SIZE: usize = 4; // This is not the true size; Will become variable
+    const DESC_TYPE: u8 = descriptor_type::CS_INTERFACE;
+    type Error = ();
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() < Self::SIZE {
+            return Err(());
+        }
+        if bytes[1] != Self::DESC_TYPE {
+            return Err(());
+        }
+        match bytes[2] {
+            ac_descriptor::MIXER_UNIT => Ok(Self::Mixer(bytes[3])),
+            ac_descriptor::SELECTOR_UNIT => Ok(Self::Selector(bytes[3])),
+            ac_descriptor::FEATURE_UNIT => Ok(Self::Feature(bytes[3])),
+            ac_descriptor::PROCESSING_UNIT => Ok(Self::Processing(bytes[3])),
+            ac_descriptor::EFFECT_UNIT => Ok(Self::Effect(bytes[3])),
+            ac_descriptor::SAMPLE_RATE_CONVERTER => Ok(Self::SampleRateConverter(bytes[3])),
+            ac_descriptor::EXTENSION_UNIT => Ok(Self::Extension(bytes[3])),
+            _ => Err(()),
+        }
+    }
+}
+
+impl UnitDescriptor {
+    pub fn unit_id(&self) -> u8 {
+        match self {
+            Self::Mixer(id) => *id,
+            Self::Selector(id) => *id,
+            Self::Feature(id) => *id,
+            Self::Processing(id) => *id,
+            Self::Effect(id) => *id,
+            Self::SampleRateConverter(id) => *id,
+            Self::Extension(id) => *id,
+        }
+    }
+}
+
+//--------------------------------------------------------------------------------------------------
+// Audio Streaming
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStreamingInterface {
@@ -564,6 +1019,8 @@ pub struct FormatTypeExtendedIII {
     pub sideband_protocol: u8,
 }
 
+//--------------------------------------------------------------------------------------------------
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -586,12 +1043,14 @@ mod test {
             // Feature Unit Descriptor
             74, 36, 6, 10, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 15, 12, 36, 3, 20, 1, 3, 0, 10, 40, 0, 0, 5, 17, 36, 2, 1, 1, 2, 0, 40, 16, 0, 0, 0, 0, 50, 0, 0,
-            3, // Input Terminal Descriptor
+            0, 0, 15, //
+            12, 36, 3, 20, 1, 3, 0, 10, 40, 0, 0, 5, // Output Terminal Descriptor
+            17, 36, 2, 1, 1, 2, 0, 40, 16, 0, 0, 0, 0, 50, 0, 0, 3, // Input Terminal Descriptor
             // Feature Unit Descriptor
             74, 36, 6, 11, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 14, 12, 36, 3, 22, 1, 1, 0, 11, 40, 0, 0, 4, // Output Terminal Descriptor
+            0, 0, 14, //
+            12, 36, 3, 22, 1, 1, 0, 11, 40, 0, 0, 4, // Output Terminal Descriptor
             9, 4, 1, 0, 0, 1, 2, 32, 8, // Audio Streaming Interface Descriptor (Alt Setting 0)
             9, 4, 1, 1, 2, 1, 2, 32, 9, // Audio Streaming Interface Descriptor (Alt Setting 1)
             16, 36, 1, 2, 0, 1, 1, 0, 0, 0, 16, 0, 0, 0, 0, 18, // AS Interface Descriptor (General)
@@ -632,6 +1091,88 @@ mod test {
             max_power: 0,
             buffer,
         };
+        let mut expected_clock_descriptors = FnvIndexMap::<u8, ClockDescriptor, MAX_CLOCK_DESCRIPTORS>::new();
+        let mut expected_unit_descriptors = FnvIndexMap::<u8, UnitDescriptor, MAX_UNIT_DESCRIPTORS>::new();
+        let mut expected_terminal_descriptors = FnvIndexMap::<u8, TerminalDescriptor, MAX_TERMINAL_DESCRIPTORS>::new();
+        expected_clock_descriptors
+            .insert(
+                40,
+                ClockDescriptor::Source(ClockSourceDescriptor {
+                    clock_id: 40,
+                    attributes_bitmap: 1,
+                    controls_bitmap: 7,
+                    associated_terminal: 0,
+                    clock_name: 16,
+                }),
+            )
+            .unwrap();
+        expected_unit_descriptors
+            .insert(10, UnitDescriptor::Feature(10))
+            .unwrap();
+        expected_unit_descriptors
+            .insert(11, UnitDescriptor::Feature(11))
+            .unwrap();
+        expected_terminal_descriptors
+            .insert(
+                2,
+                TerminalDescriptor::Input(InputTerminalDescriptor {
+                    terminal_id: 2,
+                    terminal_type: TerminalType::UsbStreaming,
+                    associated_terminal_id: 0,
+                    clock_source_id: 40,
+                    num_channels: 16,
+                    channel_config_bitmap: 0,
+                    channel_names: 18,
+                    controls_bitmap: 0,
+                    terminal_name: 2,
+                }),
+            )
+            .unwrap();
+        expected_terminal_descriptors
+            .insert(
+                20,
+                TerminalDescriptor::Output(OutputTerminalDescriptor {
+                    terminal_id: 20,
+                    terminal_type: TerminalType::Speaker,
+                    associated_terminal_id: 0,
+                    source_id: 10,
+                    clock_source_id: 40,
+                    controls_bitmap: 0,
+                    terminal_name: 5,
+                }),
+            )
+            .unwrap();
+        expected_terminal_descriptors
+            .insert(
+                1,
+                TerminalDescriptor::Input(InputTerminalDescriptor {
+                    terminal_id: 1,
+                    terminal_type: TerminalType::Microphone,
+                    associated_terminal_id: 0,
+                    clock_source_id: 40,
+                    num_channels: 16,
+                    channel_config_bitmap: 0,
+                    channel_names: 50,
+                    controls_bitmap: 0,
+                    terminal_name: 3,
+                }),
+            )
+            .unwrap();
+        expected_terminal_descriptors
+            .insert(
+                22,
+                TerminalDescriptor::Output(OutputTerminalDescriptor {
+                    terminal_id: 22,
+                    terminal_type: TerminalType::UsbStreaming,
+                    associated_terminal_id: 0,
+                    source_id: 11,
+                    clock_source_id: 40,
+                    controls_bitmap: 0,
+                    terminal_name: 4,
+                }),
+            )
+            .unwrap();
+
         let expected = AudioInterfaceCollection {
             interface_association_descriptor: InterfaceAssociationDescriptor {
                 first_interface: 0,
@@ -639,7 +1180,7 @@ mod test {
                 class: 1,
                 subclass: 0,
                 protocol: 32,
-                name: 0,
+                interface_name: 0,
             },
             control_interface: AudioControlInterface {
                 interface_descriptors: Vec::from_slice(&[InterfaceDescriptor {
@@ -659,6 +1200,10 @@ mod test {
                     category: 8,
                     controls_bitmap: 0,
                 },
+                interrupt_endpoint_descriptor: None,
+                clock_descriptors: expected_clock_descriptors,
+                unit_descriptors: expected_unit_descriptors,
+                terminal_descriptors: expected_terminal_descriptors,
             },
             audio_streaming_interfaces: Vec::from_slice(&[
                 AudioStreamingInterface {
