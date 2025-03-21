@@ -11,7 +11,7 @@ use crate::host::descriptor::{ConfigurationDescriptor, DeviceDescriptor};
 
 pub mod hub;
 pub mod kbd;
-pub mod uad;
+pub mod uac;
 
 pub struct DeviceFilter {
     base_class: Option<NonZeroU8>, // 0 would mean it's defined on an interface-level

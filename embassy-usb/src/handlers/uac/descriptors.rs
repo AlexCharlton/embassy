@@ -632,7 +632,7 @@ pub enum TerminalType {
 }
 
 fn terminal_type_from_u16(terminal_type: u16) -> TerminalType {
-    use crate::handlers::uad::codes::terminal_type::*;
+    use crate::handlers::uac::codes::terminal_type::*;
     use TerminalType::*;
 
     match terminal_type {
@@ -1078,7 +1078,7 @@ mod test {
             6, 36, 2, 1, 4, 24, // Format Type Descriptor
             7, 5, 130, 5, 0, 2, 1, // Endpoint Descriptor
             8, 37, 1, 0, 0, 2, 8, 0, // AS Endpoint Descriptor
-            9, 4, 3, 0, 0, 1, 1, 0, 0, // Audio Control Interface (UAD 1)
+            9, 4, 3, 0, 0, 1, 1, 0, 0, // Audio Control Interface (UAC 1)
             9, 36, 1, 0, 1, 9, 0, 1, 1, // Audio Control Header Descriptor
             9, 4, 4, 0, 2, 1, 3, 0, 0, // MIDI Streaming Interface Descriptor
             7, 36, 1, 0, 1, 61, 0, // MS Interface Header Descriptor

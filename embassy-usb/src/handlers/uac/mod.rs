@@ -11,11 +11,11 @@ use heapless::Vec;
 
 const MAX_RANGES: usize = 16;
 
-pub struct UadHandler<H: UsbHostDriver> {
+pub struct UacHandler<H: UsbHostDriver> {
     control_channel: H::Channel<channel::Control, channel::InOut>,
 }
 
-impl<H: UsbHostDriver> UadHandler<H> {
+impl<H: UsbHostDriver> UacHandler<H> {
     pub async fn try_register(host: &H, enum_info: EnumerationInfo) -> Result<Self, RegisterError> {
         let audio_interface_collection =
             match descriptors::AudioInterfaceCollection::try_from_configuration(&enum_info.cfg_desc) {
@@ -26,7 +26,7 @@ impl<H: UsbHostDriver> UadHandler<H> {
                 }
             };
 
-        debug!("[UAD] Audio Interface Collection: {:#?}", audio_interface_collection);
+        debug!("[UAC] Audio Interface Collection: {:#?}", audio_interface_collection);
         let input_terminal = audio_interface_collection
             .control_interface
             .terminal_descriptors
@@ -39,7 +39,7 @@ impl<H: UsbHostDriver> UadHandler<H> {
             })
             .unwrap();
 
-        debug!("[UAD] Input Terminal: {:#?}", input_terminal);
+        debug!("[UAC] Input Terminal: {:#?}", input_terminal);
 
         let mut control_channel = host.alloc_channel::<channel::Control, channel::InOut>(
             enum_info.device_address,
@@ -64,7 +64,7 @@ impl<H: UsbHostDriver> UadHandler<H> {
         control_channel.control_out(&packet, buf.as_mut_slice()).await.unwrap();
 
         let layout = Layout3ParameterBlock::try_from_bytes(buf.as_slice()).unwrap();
-        debug!("[UAD] Frequency Ranges: {:#?}", layout);
+        debug!("[UAC] Frequency Ranges: {:#?}", layout);
 
         Ok(Self { control_channel })
     }
