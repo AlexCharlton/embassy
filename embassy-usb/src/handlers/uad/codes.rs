@@ -393,3 +393,14 @@ pub mod control_selector {
         pub const DATA_UNDERRUN_CONTROL: u8 = 0x03;
     }
 }
+
+pub mod format_type {
+    pub const UNDEFINED: u8 = 0x00;
+    pub const I: u8 = 0x01;
+    pub const II: u8 = 0x02;
+    pub const III: u8 = 0x03;
+    pub const IV: u8 = 0x04;
+    pub const EXT_I: u8 = 0x81;
+    pub const EXT_II: u8 = 0x82;
+    pub const EXT_III: u8 = 0x83;
+}

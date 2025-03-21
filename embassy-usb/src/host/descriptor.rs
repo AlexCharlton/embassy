@@ -440,7 +440,7 @@ impl<'a> InterfaceDescriptor<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct EndpointDescriptor {
     /// Length of this descriptor in bytes.

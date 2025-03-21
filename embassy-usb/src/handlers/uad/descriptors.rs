@@ -1,15 +1,16 @@
 use super::codes::*;
-use crate::host::descriptor::{ConfigurationDescriptor, StringIndex, USBDescriptor};
+use crate::host::descriptor::{ConfigurationDescriptor, EndpointDescriptor, StringIndex, USBDescriptor};
+use core::iter::Peekable;
 use heapless::Vec;
 
 const MAX_AUDIO_STREAMING_INTERFACES: usize = 16;
 const MAX_ALTERNATE_SETTINGS: usize = 4;
 
 #[derive(Debug, PartialEq)]
-struct AudioInterfaceCollection {
-    interface_association_descriptor: InterfaceAssociationDescriptor,
-    control_interface: AudioControlInterface,
-    audio_streaming_interfaces: Vec<AudioStreamingInterface, MAX_AUDIO_STREAMING_INTERFACES>,
+pub struct AudioInterfaceCollection {
+    pub interface_association_descriptor: InterfaceAssociationDescriptor,
+    pub control_interface: AudioControlInterface,
+    pub audio_streaming_interfaces: Vec<AudioStreamingInterface, MAX_AUDIO_STREAMING_INTERFACES>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -27,19 +28,82 @@ impl AudioInterfaceCollection {
         let mut descriptors = cfg.iter_descriptors().peekable();
 
         // Find Interface Association Descriptor for Audio Function
-        let iad = loop {
-            let desc = descriptors.next().ok_or(AudioInterfaceError::NoAudioConfiguration)?;
-            if let Ok(iad) = InterfaceAssociationDescriptor::try_from_bytes(desc) {
-                if iad.is_audio_association() {
-                    break iad;
-                }
-            }
-        };
+        let iad = Self::find_interface_association_descriptor(&mut descriptors)?;
 
         // Find and parse Audio Control Interface
         let mut control_interface = None;
         let mut streaming_interfaces = Vec::new();
-        let mut current_interface_descriptors = Vec::new();
+
+        while let Some(interfaces) =
+            Self::next_interface_descriptors(&mut descriptors, iad.first_interface, iad.num_interfaces)?
+        {
+            trace!("Found interfaces: {:?}", interfaces);
+            let first_interface = interfaces.first().unwrap();
+            if first_interface.interface_class == interface::AUDIO {
+                match first_interface.interface_subclass {
+                    interface::subclass::AUDIOCONTROL => {
+                        if control_interface.is_some() {
+                            warn!("Audio Control Interface already parsed, skipping");
+                            continue;
+                        }
+                        if first_interface.interface_protocol != function_protocol::AF_VERSION_02_00 {
+                            debug!(
+                                "Skipping interface with unsupported protocol: {:#04x}",
+                                first_interface.interface_protocol
+                            );
+                            continue;
+                        }
+                        control_interface = Some(Self::collect_audio_control_interface(&mut descriptors, interfaces)?);
+                    }
+                    interface::subclass::AUDIOSTREAMING => {
+                        if first_interface.interface_protocol != function_protocol::AF_VERSION_02_00 {
+                            debug!(
+                                "Skipping interface with unsupported protocol: {:#04x}",
+                                first_interface.interface_protocol
+                            );
+                            continue;
+                        }
+                        streaming_interfaces
+                            .push(Self::collect_audio_streaming_interface(&mut descriptors, interfaces)?)
+                            .map_err(|_| AudioInterfaceError::BufferFull)?;
+                    }
+                    _ => {
+                        trace!(
+                            "Skipping unknown audio subclass: {:#04x}",
+                            first_interface.interface_subclass
+                        );
+                    }
+                }
+            }
+        }
+
+        // Create the audio interface collection
+        Ok(Self {
+            interface_association_descriptor: iad,
+            control_interface: control_interface.ok_or(AudioInterfaceError::MissingControlInterface)?,
+            audio_streaming_interfaces: streaming_interfaces,
+        })
+    }
+
+    fn find_interface_association_descriptor<'a>(
+        descriptors: &mut Peekable<impl Iterator<Item = &'a [u8]>>,
+    ) -> Result<InterfaceAssociationDescriptor, AudioInterfaceError> {
+        loop {
+            let desc = descriptors.next().ok_or(AudioInterfaceError::NoAudioConfiguration)?;
+            if let Ok(iad) = InterfaceAssociationDescriptor::try_from_bytes(desc) {
+                if iad.is_audio_association() {
+                    return Ok(iad);
+                }
+            }
+        }
+    }
+
+    fn next_interface_descriptors<'a>(
+        descriptors: &mut Peekable<impl Iterator<Item = &'a [u8]>>,
+        first_interface: u8,
+        num_interfaces: u8,
+    ) -> Result<Option<Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>>, AudioInterfaceError> {
+        let mut interface_descriptors = Vec::new();
 
         while let Some(desc) = descriptors.next() {
             if let Ok(interface) = InterfaceDescriptor::try_from_bytes(desc) {
@@ -53,112 +117,116 @@ impl AudioInterfaceCollection {
                 );
 
                 // Check if we're still within the audio function's interfaces
-                if interface.interface_number >= iad.first_interface + iad.num_interfaces {
+                if interface.interface_number >= first_interface + num_interfaces {
                     trace!(
                         "Interface number {} outside of IAD range, stopping",
                         interface.interface_number
                     );
                     break;
                 }
-                let next_desc = descriptors.peek();
-                if let Some(next_desc) = next_desc {
+                interface_descriptors
+                    .push(interface)
+                    .map_err(|_| AudioInterfaceError::BufferFull)?;
+
+                // Do we have contiguous (alternate) interfaces?
+                while let Some(next_desc) = descriptors.peek() {
                     if let Ok(next_interface) = InterfaceDescriptor::try_from_bytes(next_desc) {
                         if next_interface.interface_number == interface.interface_number {
+                            // The next descriptor is the same interface, so we collect all descriptors for this interface
                             trace!(
                                 "Found next interface with same number: {:#04x}",
                                 next_interface.interface_number
                             );
-                            current_interface_descriptors
-                                .push(interface)
+                            descriptors.next(); // consume the next descriptor
+                            interface_descriptors
+                                .push(next_interface)
                                 .map_err(|_| AudioInterfaceError::BufferFull)?;
-                            // The next descriptor is the same interface, so we collect all descriptors for this interface
                             continue;
                         }
                     }
+                    break;
                 }
-                if interface.interface_class == interface::AUDIO {
-                    match interface.interface_subclass {
-                        interface::subclass::AUDIOCONTROL => {
-                            trace!("Processing Audio Control Interface");
-                            if interface.interface_protocol != function_protocol::AF_VERSION_02_00 {
-                                debug!(
-                                    "Skipping interface with unsupported protocol: {:#04x}",
-                                    interface.interface_protocol
-                                );
-                                continue;
-                            }
-                            if control_interface.is_some() {
-                                warn!("Audio Control Interface already parsed, skipping");
-                                current_interface_descriptors.clear();
-                                continue;
-                            }
-                            let header = descriptors
-                                .next()
-                                .ok_or(AudioInterfaceError::MissingControlInterfaceHeader)?;
-                            if let Ok(header) = AudioControlHeaderDescriptor::try_from_bytes(header) {
-                                debug!(
-                                    "Found Audio Control Header: version={}.{}",
-                                    header.audio_device_class.0, header.audio_device_class.1
-                                );
-                                current_interface_descriptors
-                                    .push(interface)
-                                    .map_err(|_| AudioInterfaceError::BufferFull)?;
-                                control_interface = Some(AudioControlInterface {
-                                    interface_descriptors: current_interface_descriptors.clone(),
-                                    header_descriptor: header,
-                                });
-                            } else {
-                                return Err(AudioInterfaceError::MissingControlInterfaceHeader);
-                            }
-                            current_interface_descriptors.clear();
-                        }
-                        interface::subclass::AUDIOSTREAMING => {
-                            if interface.interface_protocol != function_protocol::AF_VERSION_02_00 {
-                                debug!(
-                                    "Skipping interface with unsupported protocol: {:#04x}",
-                                    interface.interface_protocol
-                                );
-                                continue;
-                            }
-                            trace!("Processing Audio Streaming Interface");
-                            let class_descriptor = descriptors
-                                .next()
-                                .ok_or(AudioInterfaceError::MissingAudioStreamingClassDescriptor)?;
-                            if let Ok(class_descriptor) =
-                                AudioStreamingClassDescriptor::try_from_bytes(class_descriptor)
-                            {
-                                trace!(
-                                    "Found Audio Streaming Class Descriptor: {:#04x}",
-                                    class_descriptor.format_type
-                                );
-                                current_interface_descriptors
-                                    .push(interface)
-                                    .map_err(|_| AudioInterfaceError::BufferFull)?;
-                                streaming_interfaces
-                                    .push(AudioStreamingInterface {
-                                        interface_descriptors: current_interface_descriptors.clone(),
-                                        class_descriptor: class_descriptor,
-                                    })
-                                    .map_err(|_| AudioInterfaceError::BufferFull)?;
-                            } else {
-                                return Err(AudioInterfaceError::MissingAudioStreamingClassDescriptor);
-                            }
-                            current_interface_descriptors.clear();
-                        }
-                        _ => {
-                            trace!("Skipping unknown audio subclass: {:#04x}", interface.interface_subclass);
-                        }
-                    }
-                }
+                break;
             }
         }
 
-        // Create the audio interface collection
-        Ok(Self {
-            interface_association_descriptor: iad,
-            control_interface: control_interface.ok_or(AudioInterfaceError::MissingControlInterface)?,
-            audio_streaming_interfaces: streaming_interfaces,
-        })
+        if interface_descriptors.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(interface_descriptors))
+        }
+    }
+
+    fn collect_audio_control_interface<'a>(
+        descriptors: &mut Peekable<impl Iterator<Item = &'a [u8]>>,
+        interfaces: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
+    ) -> Result<AudioControlInterface, AudioInterfaceError> {
+        trace!("Processing Audio Control Interface");
+        let header = descriptors
+            .next()
+            .ok_or(AudioInterfaceError::MissingControlInterfaceHeader)?;
+        if let Ok(header) = AudioControlHeaderDescriptor::try_from_bytes(header) {
+            debug!(
+                "Found Audio Control Header: version={}.{}",
+                header.audio_device_class.0, header.audio_device_class.1
+            );
+            Ok(AudioControlInterface {
+                interface_descriptors: interfaces,
+                header_descriptor: header,
+            })
+        } else {
+            Err(AudioInterfaceError::MissingControlInterfaceHeader)
+        }
+    }
+
+    fn collect_audio_streaming_interface<'a>(
+        descriptors: &mut Peekable<impl Iterator<Item = &'a [u8]>>,
+        interfaces: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
+    ) -> Result<AudioStreamingInterface, AudioInterfaceError> {
+        trace!("Processing Audio Streaming Interface");
+        let class_descriptor = descriptors
+            .next()
+            .ok_or(AudioInterfaceError::MissingAudioStreamingClassDescriptor)?;
+        if let Ok(class_descriptor) = AudioStreamingClassDescriptor::try_from_bytes(class_descriptor) {
+            trace!(
+                "Found Audio Streaming Class Descriptor: {:#04x}",
+                class_descriptor.format_type
+            );
+            let mut streaming_interface = AudioStreamingInterface {
+                interface_descriptors: interfaces,
+                class_descriptor: class_descriptor,
+                endpoint_descriptor: None,
+                feedback_endpoint_descriptor: None,
+                audio_endpoint_descriptor: None,
+                format_type_descriptor: None,
+            };
+            loop {
+                if let Some(desc) = descriptors.peek() {
+                    if InterfaceDescriptor::try_from_bytes(desc).is_ok() {
+                        break;
+                    }
+                    let desc = descriptors.next().unwrap();
+                    if let Ok(endpoint) = EndpointDescriptor::try_from_bytes(desc) {
+                        if endpoint.attributes == 0b010001 {
+                            streaming_interface.feedback_endpoint_descriptor = Some(endpoint);
+                        } else {
+                            streaming_interface.endpoint_descriptor = Some(endpoint);
+                        }
+                    }
+                    if let Ok(audio_endpoint) = AudioEndpointDescriptor::try_from_bytes(desc) {
+                        streaming_interface.audio_endpoint_descriptor = Some(audio_endpoint);
+                    }
+                    if let Ok(format_type) = FormatTypeDescriptor::try_from_bytes(desc) {
+                        streaming_interface.format_type_descriptor = Some(format_type);
+                    }
+                } else {
+                    break;
+                }
+            }
+            Ok(streaming_interface)
+        } else {
+            Err(AudioInterfaceError::MissingAudioStreamingClassDescriptor)
+        }
     }
 }
 
@@ -243,16 +311,18 @@ impl USBDescriptor for InterfaceDescriptor {
 }
 
 #[derive(Debug, PartialEq)]
-struct AudioControlInterface {
-    interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
-    header_descriptor: AudioControlHeaderDescriptor,
+pub struct AudioControlInterface {
+    pub interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
+    pub header_descriptor: AudioControlHeaderDescriptor,
+    // TODO: Endpoint descriptors
+    // TODO: Clock, unit, terminal descriptors
 }
 
 #[derive(Debug, PartialEq)]
-struct AudioControlHeaderDescriptor {
-    audio_device_class: (u8, u8), // Major, minor version
-    category: u8,
-    controls_bitmap: u8,
+pub struct AudioControlHeaderDescriptor {
+    pub audio_device_class: (u8, u8), // Major, minor version
+    pub category: u8,
+    pub controls_bitmap: u8,
 }
 
 impl USBDescriptor for AudioControlHeaderDescriptor {
@@ -279,20 +349,25 @@ impl USBDescriptor for AudioControlHeaderDescriptor {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct AudioStreamingInterface {
-    interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
-    class_descriptor: AudioStreamingClassDescriptor,
+pub struct AudioStreamingInterface {
+    pub interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
+    pub class_descriptor: AudioStreamingClassDescriptor,
+    pub endpoint_descriptor: Option<EndpointDescriptor>,
+    pub feedback_endpoint_descriptor: Option<EndpointDescriptor>,
+    pub audio_endpoint_descriptor: Option<AudioEndpointDescriptor>,
+    pub format_type_descriptor: Option<FormatTypeDescriptor>,
+    // TODO: Encoder, decoder descriptors
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct AudioStreamingClassDescriptor {
-    terminal_link_id: u8,
-    controls_bitmap: u8,
-    format_type: u8,
-    format_bitmap: u32,
-    num_channels: u8,
-    channel_config_bitmap: u32,
-    channel_name: StringIndex,
+pub struct AudioStreamingClassDescriptor {
+    pub terminal_link_id: u8,
+    pub controls_bitmap: u8,
+    pub format_type: u8,
+    pub format_bitmap: u32,
+    pub num_channels: u8,
+    pub channel_config_bitmap: u32,
+    pub channel_name: StringIndex,
 }
 
 impl USBDescriptor for AudioStreamingClassDescriptor {
@@ -320,6 +395,173 @@ impl USBDescriptor for AudioStreamingClassDescriptor {
             channel_name: bytes[15],
         })
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AudioEndpointDescriptor {
+    pub attributes_bitmap: u8,
+    pub controls_bitmap: u8,
+    pub lock_delay_units: u8,
+    pub lock_delay: u16,
+}
+
+impl USBDescriptor for AudioEndpointDescriptor {
+    const SIZE: usize = 6;
+    const DESC_TYPE: u8 = descriptor_type::CS_ENDPOINT;
+    type Error = ();
+
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() < Self::SIZE {
+            return Err(());
+        }
+        if bytes[1] != Self::DESC_TYPE {
+            return Err(());
+        }
+        if bytes[2] != as_descriptor::GENERAL {
+            return Err(());
+        }
+        Ok(Self {
+            attributes_bitmap: bytes[3],
+            controls_bitmap: bytes[4],
+            lock_delay_units: bytes[5],
+            lock_delay: u16::from_le_bytes([bytes[6], bytes[7]]),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum FormatTypeDescriptor {
+    I(FormatTypeI),
+    II(FormatTypeII),
+    III(FormatTypeIII),
+    IV,
+    ExtendedI(FormatTypeExtendedI),
+    ExtendedII(FormatTypeExtendedII),
+    ExtendedIII(FormatTypeExtendedIII),
+}
+
+impl FormatTypeDescriptor {
+    fn try_from_bytes(bytes: &[u8]) -> Result<Self, ()> {
+        if bytes.len() < 4 {
+            // minimum length of a format type descriptor
+            return Err(());
+        }
+        let len = bytes[0] as usize;
+        if bytes[1] != descriptor_type::CS_INTERFACE {
+            return Err(());
+        }
+        if bytes[2] != as_descriptor::FORMAT_TYPE {
+            return Err(());
+        }
+        match bytes[3] {
+            format_type::I => {
+                if len != 6 {
+                    return Err(());
+                }
+                Ok(Self::I(FormatTypeI {
+                    subslot_size: bytes[4],
+                    bit_resolution: bytes[5],
+                }))
+            }
+            format_type::II => {
+                if len != 8 {
+                    return Err(());
+                }
+                Ok(Self::II(FormatTypeII {
+                    max_bit_rate: u16::from_le_bytes([bytes[4], bytes[5]]),
+                    slots_per_frame: u16::from_le_bytes([bytes[6], bytes[7]]),
+                }))
+            }
+            format_type::III => {
+                if len != 6 {
+                    return Err(());
+                }
+                Ok(Self::III(FormatTypeIII {
+                    subslot_size: bytes[4],
+                    bit_resolution: bytes[5],
+                }))
+            }
+            format_type::IV => Ok(Self::IV),
+            format_type::EXT_I => {
+                if len != 9 {
+                    return Err(());
+                }
+                Ok(Self::ExtendedI(FormatTypeExtendedI {
+                    subslot_size: bytes[4],
+                    bit_resolution: bytes[5],
+                    header_length: bytes[6],
+                    control_size: bytes[7],
+                    sideband_protocol: bytes[8],
+                }))
+            }
+            format_type::EXT_II => {
+                if len != 10 {
+                    return Err(());
+                }
+                Ok(Self::ExtendedII(FormatTypeExtendedII {
+                    max_bit_rate: u16::from_le_bytes([bytes[4], bytes[5]]),
+                    samples_per_frame: u16::from_le_bytes([bytes[6], bytes[7]]),
+                    header_length: bytes[8],
+                    sideband_protocol: bytes[9],
+                }))
+            }
+            format_type::EXT_III => {
+                if len != 8 {
+                    return Err(());
+                }
+                Ok(Self::ExtendedIII(FormatTypeExtendedIII {
+                    subslot_size: bytes[4],
+                    bit_resolution: bytes[5],
+                    header_length: bytes[6],
+                    sideband_protocol: bytes[7],
+                }))
+            }
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatTypeI {
+    pub subslot_size: u8,
+    pub bit_resolution: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatTypeII {
+    pub max_bit_rate: u16,
+    pub slots_per_frame: u16,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatTypeIII {
+    pub subslot_size: u8,
+    pub bit_resolution: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatTypeExtendedI {
+    pub subslot_size: u8,
+    pub bit_resolution: u8,
+    pub header_length: u8,
+    pub control_size: u8,
+    pub sideband_protocol: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatTypeExtendedII {
+    pub max_bit_rate: u16,
+    pub samples_per_frame: u16,
+    pub header_length: u8,
+    pub sideband_protocol: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormatTypeExtendedIII {
+    pub subslot_size: u8,
+    pub bit_resolution: u8,
+    pub header_length: u8,
+    pub sideband_protocol: u8,
 }
 
 #[cfg(test)]
@@ -363,7 +605,7 @@ mod test {
             6, 36, 2, 1, 4, 24, // Format Type Descriptor
             7, 5, 130, 5, 0, 2, 1, // Endpoint Descriptor
             8, 37, 1, 0, 0, 2, 8, 0, // AS Endpoint Descriptor
-            9, 4, 3, 0, 0, 1, 1, 0, 0, // Audio Control Interface
+            9, 4, 3, 0, 0, 1, 1, 0, 0, // Audio Control Interface (UAD 1)
             9, 36, 1, 0, 1, 9, 0, 1, 1, // Audio Control Header Descriptor
             9, 4, 4, 0, 2, 1, 3, 0, 0, // MIDI Streaming Interface Descriptor
             7, 36, 1, 0, 1, 61, 0, // MS Interface Header Descriptor
@@ -454,6 +696,32 @@ mod test {
                         channel_config_bitmap: 0,
                         channel_name: 18,
                     },
+                    endpoint_descriptor: Some(EndpointDescriptor {
+                        len: 7,
+                        descriptor_type: 5,
+                        endpoint_address: 1,
+                        attributes: 5,
+                        max_packet_size: 512,
+                        interval: 1,
+                    }),
+                    feedback_endpoint_descriptor: Some(EndpointDescriptor {
+                        len: 7,
+                        descriptor_type: 5,
+                        endpoint_address: 129,
+                        attributes: 17,
+                        max_packet_size: 4,
+                        interval: 4,
+                    }),
+                    audio_endpoint_descriptor: Some(AudioEndpointDescriptor {
+                        attributes_bitmap: 0,
+                        controls_bitmap: 0,
+                        lock_delay_units: 2,
+                        lock_delay: 8,
+                    }),
+                    format_type_descriptor: Some(FormatTypeDescriptor::I(FormatTypeI {
+                        subslot_size: 4,
+                        bit_resolution: 24,
+                    })),
                 },
                 AudioStreamingInterface {
                     interface_descriptors: Vec::from_slice(&[
@@ -490,11 +758,31 @@ mod test {
                         channel_config_bitmap: 0,
                         channel_name: 50,
                     },
+                    endpoint_descriptor: Some(EndpointDescriptor {
+                        len: 7,
+                        descriptor_type: 5,
+                        endpoint_address: 130,
+                        attributes: 5,
+                        max_packet_size: 512,
+                        interval: 1,
+                    }),
+                    feedback_endpoint_descriptor: None,
+                    audio_endpoint_descriptor: Some(AudioEndpointDescriptor {
+                        attributes_bitmap: 0,
+                        controls_bitmap: 0,
+                        lock_delay_units: 2,
+                        lock_delay: 8,
+                    }),
+                    format_type_descriptor: Some(FormatTypeDescriptor::I(FormatTypeI {
+                        subslot_size: 4,
+                        bit_resolution: 24,
+                    })),
                 },
             ])
             .unwrap(),
         };
         let audio_interface_collection = AudioInterfaceCollection::try_from_configuration(&descriptor).unwrap();
+        // info!("{:#?}", audio_interface_collection);
         assert_eq!(audio_interface_collection, expected);
     }
 }
