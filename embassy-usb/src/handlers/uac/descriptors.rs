@@ -575,6 +575,13 @@ impl TerminalDescriptor {
             Self::Output(desc) => desc.clock_source_id,
         }
     }
+
+    pub fn terminal_name(&self) -> crate::StringIndex {
+        match self {
+            Self::Input(desc) => crate::StringIndex(desc.terminal_name),
+            Self::Output(desc) => crate::StringIndex(desc.terminal_name),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

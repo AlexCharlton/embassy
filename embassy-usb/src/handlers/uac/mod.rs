@@ -3,13 +3,19 @@ pub mod codes;
 #[allow(missing_docs)]
 pub mod descriptors;
 
+use crate::control::Request;
+
 use super::{EnumerationInfo, RegisterError};
 use aligned::{Aligned, A4};
 use embassy_usb_driver::host::{channel, ChannelError, RequestType, SetupPacket, UsbChannel, UsbHostDriver};
 use embassy_usb_driver::{EndpointInfo, EndpointType};
-use heapless::Vec;
+use heapless::{String, Vec};
 
 const MAX_RANGES: usize = 16;
+// 256 is the maximum buffer size that can be used to store a string
+const MAX_STRING_BUF_SIZE: usize = 255;
+// But because these are UTF-16 strings, we can only store 127 characters (first two bytes are part of the header)
+const MAX_STRING_LENGTH: usize = 127;
 
 pub struct UacHandler<H: UsbHostDriver> {
     control_channel: H::Channel<channel::Control, channel::InOut>,
@@ -61,7 +67,95 @@ impl<H: UsbHostDriver> UacHandler<H> {
         let sampling_freq = slf.get_sampling_freq(input_terminal.1.clock_source_id()).await;
         debug!("[UAC] Current Sampling Frequency: {:?}", sampling_freq);
 
+        let lang_id = slf.get_supported_language().await;
+        debug!("[UAC] Supported Language: {:?}", lang_id);
+
+        let terminal_name = slf.get_string(input_terminal.1.terminal_name(), lang_id.unwrap()).await;
+        debug!("[UAC] Terminal Name: {:?}", terminal_name);
+
         Ok(slf)
+    }
+
+    pub async fn get_supported_language(&mut self) -> Result<u16, RequestError> {
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_STANDARD | RequestType::RECIPIENT_DEVICE,
+            request: Request::GET_DESCRIPTOR,
+            value: 0x0300, // String descriptor at index 0x00
+            index: 0x00,
+            length: 4,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; 4]);
+
+        self.control_channel
+            .control_in(&packet, buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        Ok(u16::from_le_bytes([buf[2], buf[3]]))
+    }
+
+    pub async fn get_string(
+        &mut self,
+        index: crate::StringIndex,
+        lang_id: u16,
+    ) -> Result<String<MAX_STRING_LENGTH>, RequestError> {
+        // First, get just the length
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_STANDARD | RequestType::RECIPIENT_DEVICE,
+            request: Request::GET_DESCRIPTOR,
+            value: (0x03 << 8) | index.0 as u16,
+            index: lang_id,
+            length: 2, // Just get the length byte and type byte
+        };
+
+        let mut length_buf = Aligned::<A4, _>([0; 2]);
+        self.control_channel
+            .control_in(&packet, length_buf.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        if length_buf[1] != 0x03 {
+            return Err(RequestError::InvalidResponse);
+        }
+
+        let total_length = length_buf[0] as u16;
+        if total_length == 0 || total_length > MAX_STRING_BUF_SIZE as u16 {
+            return Err(RequestError::InvalidResponse);
+        }
+
+        // Now get the full string with the correct length
+        let packet = SetupPacket {
+            request_type: RequestType::IN | RequestType::TYPE_STANDARD | RequestType::RECIPIENT_DEVICE,
+            request: Request::GET_DESCRIPTOR,
+            value: (0x03 << 8) | index.0 as u16,
+            index: lang_id,
+            length: total_length,
+        };
+
+        let mut buf = Aligned::<A4, _>([0; MAX_STRING_BUF_SIZE]);
+        self.control_channel
+            .control_in(&packet, &mut buf.as_mut_slice()[..total_length as usize])
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        // Rest of the string parsing code...
+        let mut buf = &buf.as_mut_slice()[2..total_length as usize];
+        let mut str = String::new();
+        while buf.len() >= 2 {
+            let b = u16::from_le_bytes([buf[0], buf[1]]);
+            if b == 0 {
+                break;
+            }
+            if let Some(c) = char::from_u32(b as u32) {
+                str.push(c).unwrap(); // We know we won't exceed the buffer size
+            } else {
+                return Err(RequestError::InvalidResponse);
+            }
+            buf = &buf[2..];
+        }
+
+        Ok(str)
     }
 
     pub async fn get_sampling_freq(&mut self, terminal_id: u8) -> Result<u32, RequestError> {
