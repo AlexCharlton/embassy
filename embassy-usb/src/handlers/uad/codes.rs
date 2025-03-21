@@ -140,130 +140,130 @@ pub mod decoder_type {
 pub mod control_selector {
     /// Clock Source Control Selectors
     pub mod clock_source {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const SAM_FREQ_CONTROL: u8 = 0x01;
-        pub const CLOCK_VALID_CONTROL: u8 = 0x02;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const SAMPLING_FREQ_CONTROL: u16 = 0x01 << 8;
+        pub const CLOCK_VALID_CONTROL: u16 = 0x02 << 8;
     }
 
     /// Clock Selector Control Selectors
     pub mod clock_selector {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const CLOCK_SELECTOR_CONTROL: u8 = 0x01;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const CLOCK_SELECTOR_CONTROL: u16 = 0x01 << 8;
     }
 
     /// Clock Multiplier Control Selectors
     pub mod clock_multiplier {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const NUMERATOR_CONTROL: u8 = 0x01;
-        pub const DENOMINATOR_CONTROL: u8 = 0x02;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const NUMERATOR_CONTROL: u16 = 0x01 << 8;
+        pub const DENOMINATOR_CONTROL: u16 = 0x02 << 8;
     }
 
     /// Terminal Control Selectors
     pub mod terminal {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const COPY_PROTECT_CONTROL: u8 = 0x01;
-        pub const CONNECTOR_CONTROL: u8 = 0x02;
-        pub const OVERLOAD_CONTROL: u8 = 0x03;
-        pub const CLUSTER_CONTROL: u8 = 0x04;
-        pub const UNDERFLOW_CONTROL: u8 = 0x05;
-        pub const OVERFLOW_CONTROL: u8 = 0x06;
-        pub const LATENCY_CONTROL: u8 = 0x07;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const COPY_PROTECT_CONTROL: u16 = 0x01 << 8;
+        pub const CONNECTOR_CONTROL: u16 = 0x02 << 8;
+        pub const OVERLOAD_CONTROL: u16 = 0x03 << 8;
+        pub const CLUSTER_CONTROL: u16 = 0x04 << 8;
+        pub const UNDERFLOW_CONTROL: u16 = 0x05 << 8;
+        pub const OVERFLOW_CONTROL: u16 = 0x06 << 8;
+        pub const LATENCY_CONTROL: u16 = 0x07 << 8;
     }
 
     /// Mixer Control Selectors
     pub mod mixer {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const MIXER_CONTROL: u8 = 0x01;
-        pub const CLUSTER_CONTROL: u8 = 0x02;
-        pub const UNDERFLOW_CONTROL: u8 = 0x03;
-        pub const OVERFLOW_CONTROL: u8 = 0x04;
-        pub const LATENCY_CONTROL: u8 = 0x05;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const MIXER_CONTROL: u16 = 0x01 << 8;
+        pub const CLUSTER_CONTROL: u16 = 0x02 << 8;
+        pub const UNDERFLOW_CONTROL: u16 = 0x03 << 8;
+        pub const OVERFLOW_CONTROL: u16 = 0x04 << 8;
+        pub const LATENCY_CONTROL: u16 = 0x05 << 8;
     }
 
     /// Selector Control Selectors
     pub mod selector {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const SELECTOR_CONTROL: u8 = 0x01;
-        pub const LATENCY_CONTROL: u8 = 0x02;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const SELECTOR_CONTROL: u16 = 0x01 << 8;
+        pub const LATENCY_CONTROL: u16 = 0x02 << 8;
     }
 
     /// Feature Unit Control Selectors
     pub mod feature_unit {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const MUTE_CONTROL: u8 = 0x01;
-        pub const VOLUME_CONTROL: u8 = 0x02;
-        pub const BASS_CONTROL: u8 = 0x03;
-        pub const MID_CONTROL: u8 = 0x04;
-        pub const TREBLE_CONTROL: u8 = 0x05;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const MUTE_CONTROL: u16 = 0x01 << 8;
+        pub const VOLUME_CONTROL: u16 = 0x02 << 8;
+        pub const BASS_CONTROL: u16 = 0x03 << 8;
+        pub const MID_CONTROL: u16 = 0x04 << 8;
+        pub const TREBLE_CONTROL: u16 = 0x05 << 8;
         pub const GRAPHIC_EQUALIZER_CONTROL: u8 = 0x06;
-        pub const AUTOMATIC_GAIN_CONTROL: u8 = 0x07;
-        pub const DELAY_CONTROL: u8 = 0x08;
-        pub const BASS_BOOST_CONTROL: u8 = 0x09;
-        pub const LOUDNESS_CONTROL: u8 = 0x0A;
-        pub const INPUT_GAIN_CONTROL: u8 = 0x0B;
-        pub const INPUT_GAIN_PAD_CONTROL: u8 = 0x0C;
-        pub const PHASE_INVERTER_CONTROL: u8 = 0x0D;
-        pub const UNDERFLOW_CONTROL: u8 = 0x0E;
-        pub const OVERFLOW_CONTROL: u8 = 0x0F;
-        pub const LATENCY_CONTROL: u8 = 0x10;
+        pub const AUTOMATIC_GAIN_CONTROL: u16 = 0x07 << 8;
+        pub const DELAY_CONTROL: u16 = 0x08 << 8;
+        pub const BASS_BOOST_CONTROL: u16 = 0x09 << 8;
+        pub const LOUDNESS_CONTROL: u16 = 0x0A << 8;
+        pub const INPUT_GAIN_CONTROL: u16 = 0x0B << 8;
+        pub const INPUT_GAIN_PAD_CONTROL: u16 = 0x0C << 8;
+        pub const PHASE_INVERTER_CONTROL: u16 = 0x0D << 8;
+        pub const UNDERFLOW_CONTROL: u16 = 0x0E << 8;
+        pub const OVERFLOW_CONTROL: u16 = 0x0F << 8;
+        pub const LATENCY_CONTROL: u16 = 0x10 << 8;
     }
 
     /// Effect Unit Control Selectors
     pub mod effect_unit {
         /// Parametric Equalizer Section Effect Unit Control Selectors
         pub mod parametric_equalizer {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const CENTERFREQ_CONTROL: u8 = 0x02;
-            pub const QFACTOR_CONTROL: u8 = 0x03;
-            pub const GAIN_CONTROL: u8 = 0x04;
-            pub const UNDERFLOW_CONTROL: u8 = 0x05;
-            pub const OVERFLOW_CONTROL: u8 = 0x06;
-            pub const LATENCY_CONTROL: u8 = 0x07;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const CENTERFREQ_CONTROL: u16 = 0x02 << 8;
+            pub const QFACTOR_CONTROL: u16 = 0x03 << 8;
+            pub const GAIN_CONTROL: u16 = 0x04 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x05 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x06 << 8;
+            pub const LATENCY_CONTROL: u16 = 0x07 << 8;
         }
 
         /// Reverberation Effect Unit Control Selectors
         pub mod reverberation {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const TYPE_CONTROL: u8 = 0x02;
-            pub const LEVEL_CONTROL: u8 = 0x03;
-            pub const TIME_CONTROL: u8 = 0x04;
-            pub const FEEDBACK_CONTROL: u8 = 0x05;
-            pub const PREDELAY_CONTROL: u8 = 0x06;
-            pub const DENSITY_CONTROL: u8 = 0x07;
-            pub const HIFREQ_ROLLOFF_CONTROL: u8 = 0x08;
-            pub const UNDERFLOW_CONTROL: u8 = 0x09;
-            pub const OVERFLOW_CONTROL: u8 = 0x0A;
-            pub const LATENCY_CONTROL: u8 = 0x0B;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const TYPE_CONTROL: u16 = 0x02 << 8;
+            pub const LEVEL_CONTROL: u16 = 0x03 << 8;
+            pub const TIME_CONTROL: u16 = 0x04 << 8;
+            pub const FEEDBACK_CONTROL: u16 = 0x05 << 8;
+            pub const PREDELAY_CONTROL: u16 = 0x06 << 8;
+            pub const DENSITY_CONTROL: u16 = 0x07 << 8;
+            pub const HIFREQ_ROLLOFF_CONTROL: u16 = 0x08 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x09 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x0A << 8;
+            pub const LATENCY_CONTROL: u16 = 0x0B << 8;
         }
 
         /// Modulation Delay Effect Unit Control Selectors
         pub mod modulation_delay {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const BALANCE_CONTROL: u8 = 0x02;
-            pub const RATE_CONTROL: u8 = 0x03;
-            pub const DEPTH_CONTROL: u8 = 0x04;
-            pub const TIME_CONTROL: u8 = 0x05;
-            pub const FEEDBACK_CONTROL: u8 = 0x06;
-            pub const UNDERFLOW_CONTROL: u8 = 0x07;
-            pub const OVERFLOW_CONTROL: u8 = 0x08;
-            pub const LATENCY_CONTROL: u8 = 0x09;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const BALANCE_CONTROL: u16 = 0x02 << 8;
+            pub const RATE_CONTROL: u16 = 0x03 << 8;
+            pub const DEPTH_CONTROL: u16 = 0x04 << 8;
+            pub const TIME_CONTROL: u16 = 0x05 << 8;
+            pub const FEEDBACK_CONTROL: u16 = 0x06 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x07 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x08 << 8;
+            pub const LATENCY_CONTROL: u16 = 0x09 << 8;
         }
 
         /// Dynamic Range Compressor Effect Unit Control Selectors
         pub mod dynamic_range_compressor {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const COMPRESSION_RATE_CONTROL: u8 = 0x02;
-            pub const MAXAMPL_CONTROL: u8 = 0x03;
-            pub const THRESHOLD_CONTROL: u8 = 0x04;
-            pub const ATTACK_TIME_CONTROL: u8 = 0x05;
-            pub const RELEASE_TIME_CONTROL: u8 = 0x06;
-            pub const UNDERFLOW_CONTROL: u8 = 0x07;
-            pub const OVERFLOW_CONTROL: u8 = 0x08;
-            pub const LATENCY_CONTROL: u8 = 0x09;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const COMPRESSION_RATE_CONTROL: u16 = 0x02 << 8;
+            pub const MAXAMPL_CONTROL: u16 = 0x03 << 8;
+            pub const THRESHOLD_CONTROL: u16 = 0x04 << 8;
+            pub const ATTACK_TIME_CONTROL: u16 = 0x05 << 8;
+            pub const RELEASE_TIME_CONTROL: u16 = 0x06 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x07 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x08 << 8;
+            pub const LATENCY_CONTROL: u16 = 0x09 << 8;
         }
     }
 
@@ -271,126 +271,126 @@ pub mod control_selector {
     pub mod processing_unit {
         /// Up/Down-mix Processing Unit Control Selectors
         pub mod up_downmix {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const MODE_SELECT_CONTROL: u8 = 0x02;
-            pub const CLUSTER_CONTROL: u8 = 0x03;
-            pub const UNDERFLOW_CONTROL: u8 = 0x04;
-            pub const OVERFLOW_CONTROL: u8 = 0x05;
-            pub const LATENCY_CONTROL: u8 = 0x06;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const MODE_SELECT_CONTROL: u16 = 0x02 << 8;
+            pub const CLUSTER_CONTROL: u16 = 0x03 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x04 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x05 << 8;
+            pub const LATENCY_CONTROL: u16 = 0x06 << 8;
         }
 
         /// Dolby Prologic Processing Unit Control Selectors
         pub mod dolby_prologic {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const MODE_SELECT_CONTROL: u8 = 0x02;
-            pub const CLUSTER_CONTROL: u8 = 0x03;
-            pub const UNDERFLOW_CONTROL: u8 = 0x04;
-            pub const OVERFLOW_CONTROL: u8 = 0x05;
-            pub const LATENCY_CONTROL: u8 = 0x06;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const MODE_SELECT_CONTROL: u16 = 0x02 << 8;
+            pub const CLUSTER_CONTROL: u16 = 0x03 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x04 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x05 << 8;
+            pub const LATENCY_CONTROL: u16 = 0x06 << 8;
         }
 
         /// Stereo Extender Processing Unit Control Selectors
         pub mod stereo_extender {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const ENABLE_CONTROL: u8 = 0x01;
-            pub const WIDTH_CONTROL: u8 = 0x02;
-            pub const UNDERFLOW_CONTROL: u8 = 0x03;
-            pub const OVERFLOW_CONTROL: u8 = 0x04;
-            pub const LATENCY_CONTROL: u8 = 0x05;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+            pub const WIDTH_CONTROL: u16 = 0x02 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x03 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x04 << 8;
+            pub const LATENCY_CONTROL: u16 = 0x05 << 8;
         }
     }
 
     /// Extension Unit Control Selectors
     pub mod extension_unit {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const ENABLE_CONTROL: u8 = 0x01;
-        pub const CLUSTER_CONTROL: u8 = 0x02;
-        pub const UNDERFLOW_CONTROL: u8 = 0x03;
-        pub const OVERFLOW_CONTROL: u8 = 0x04;
-        pub const LATENCY_CONTROL: u8 = 0x05;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const ENABLE_CONTROL: u16 = 0x01 << 8;
+        pub const CLUSTER_CONTROL: u16 = 0x02 << 8;
+        pub const UNDERFLOW_CONTROL: u16 = 0x03 << 8;
+        pub const OVERFLOW_CONTROL: u16 = 0x04 << 8;
+        pub const LATENCY_CONTROL: u16 = 0x05 << 8;
     }
 
     /// AudioStreaming Interface Control Selectors
     pub mod audio_streaming {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const ACT_ALT_SETTING_CONTROL: u8 = 0x01;
-        pub const VAL_ALT_SETTINGS_CONTROL: u8 = 0x02;
-        pub const AUDIO_DATA_FORMAT_CONTROL: u8 = 0x03;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const ACT_ALT_SETTING_CONTROL: u16 = 0x01 << 8;
+        pub const VAL_ALT_SETTINGS_CONTROL: u16 = 0x02 << 8;
+        pub const AUDIO_DATA_FORMAT_CONTROL: u16 = 0x03 << 8;
     }
 
     /// Encoder Control Selectors
     pub mod encoder {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const BIT_RATE_CONTROL: u8 = 0x01;
-        pub const QUALITY_CONTROL: u8 = 0x02;
-        pub const VBR_CONTROL: u8 = 0x03;
-        pub const TYPE_CONTROL: u8 = 0x04;
-        pub const UNDERFLOW_CONTROL: u8 = 0x05;
-        pub const OVERFLOW_CONTROL: u8 = 0x06;
-        pub const ENCODER_ERROR_CONTROL: u8 = 0x07;
-        pub const PARAM1_CONTROL: u8 = 0x08;
-        pub const PARAM2_CONTROL: u8 = 0x09;
-        pub const PARAM3_CONTROL: u8 = 0x0A;
-        pub const PARAM4_CONTROL: u8 = 0x0B;
-        pub const PARAM5_CONTROL: u8 = 0x0C;
-        pub const PARAM6_CONTROL: u8 = 0x0D;
-        pub const PARAM7_CONTROL: u8 = 0x0E;
-        pub const PARAM8_CONTROL: u8 = 0x0F;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const BIT_RATE_CONTROL: u16 = 0x01 << 8;
+        pub const QUALITY_CONTROL: u16 = 0x02 << 8;
+        pub const VBR_CONTROL: u16 = 0x03 << 8;
+        pub const TYPE_CONTROL: u16 = 0x04 << 8;
+        pub const UNDERFLOW_CONTROL: u16 = 0x05 << 8;
+        pub const OVERFLOW_CONTROL: u16 = 0x06 << 8;
+        pub const ENCODER_ERROR_CONTROL: u16 = 0x07 << 8;
+        pub const PARAM1_CONTROL: u16 = 0x08 << 8;
+        pub const PARAM2_CONTROL: u16 = 0x09 << 8;
+        pub const PARAM3_CONTROL: u16 = 0x0A << 8;
+        pub const PARAM4_CONTROL: u16 = 0x0B << 8;
+        pub const PARAM5_CONTROL: u16 = 0x0C << 8;
+        pub const PARAM6_CONTROL: u16 = 0x0D << 8;
+        pub const PARAM7_CONTROL: u16 = 0x0E << 8;
+        pub const PARAM8_CONTROL: u16 = 0x0F << 8;
     }
 
     /// Decoder Control Selectors
     pub mod decoder {
         /// MPEG Decoder Control Selectors
         pub mod mpeg {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const DUAL_CHANNEL_CONTROL: u8 = 0x01;
-            pub const SECOND_STEREO_CONTROL: u8 = 0x02;
-            pub const MULTILINGUAL_CONTROL: u8 = 0x03;
-            pub const DYN_RANGE_CONTROL: u8 = 0x04;
-            pub const SCALING_CONTROL: u8 = 0x05;
-            pub const HILO_SCALING_CONTROL: u8 = 0x06;
-            pub const UNDERFLOW_CONTROL: u8 = 0x07;
-            pub const OVERFLOW_CONTROL: u8 = 0x08;
-            pub const DECODER_ERROR_CONTROL: u8 = 0x09;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const DUAL_CHANNEL_CONTROL: u16 = 0x01 << 8;
+            pub const SECOND_STEREO_CONTROL: u16 = 0x02 << 8;
+            pub const MULTILINGUAL_CONTROL: u16 = 0x03 << 8;
+            pub const DYN_RANGE_CONTROL: u16 = 0x04 << 8;
+            pub const SCALING_CONTROL: u16 = 0x05 << 8;
+            pub const HILO_SCALING_CONTROL: u16 = 0x06 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x07 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x08 << 8;
+            pub const DECODER_ERROR_CONTROL: u16 = 0x09 << 8;
         }
 
         /// AC-3 Decoder Control Selectors
         pub mod ac_3 {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const MODE_CONTROL: u8 = 0x01;
-            pub const DYN_RANGE_CONTROL: u8 = 0x02;
-            pub const SCALING_CONTROL: u8 = 0x03;
-            pub const HILO_SCALING_CONTROL: u8 = 0x04;
-            pub const UNDERFLOW_CONTROL: u8 = 0x05;
-            pub const OVERFLOW_CONTROL: u8 = 0x06;
-            pub const DECODER_ERROR_CONTROL: u8 = 0x07;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const MODE_CONTROL: u16 = 0x01 << 8;
+            pub const DYN_RANGE_CONTROL: u16 = 0x02 << 8;
+            pub const SCALING_CONTROL: u16 = 0x03 << 8;
+            pub const HILO_SCALING_CONTROL: u16 = 0x04 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x05 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x06 << 8;
+            pub const DECODER_ERROR_CONTROL: u16 = 0x07 << 8;
         }
 
         /// WMA Decoder Control Selectors
         pub mod wma {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const UNDERFLOW_CONTROL: u8 = 0x01;
-            pub const OVERFLOW_CONTROL: u8 = 0x02;
-            pub const DECODER_ERROR_CONTROL: u8 = 0x03;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x01 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x02 << 8;
+            pub const DECODER_ERROR_CONTROL: u16 = 0x03 << 8;
         }
 
         /// DTS Decoder Control Selectors
         pub mod dts {
-            pub const UNDEFINED: u8 = 0x00;
-            pub const UNDERFLOW_CONTROL: u8 = 0x01;
-            pub const OVERFLOW_CONTROL: u8 = 0x02;
-            pub const DECODER_ERROR_CONTROL: u8 = 0x03;
+            pub const UNDEFINED: u16 = 0x00 << 8;
+            pub const UNDERFLOW_CONTROL: u16 = 0x01 << 8;
+            pub const OVERFLOW_CONTROL: u16 = 0x02 << 8;
+            pub const DECODER_ERROR_CONTROL: u16 = 0x03 << 8;
         }
     }
 
     /// Endpoint Control Selectors
     pub mod endpoint {
-        pub const UNDEFINED: u8 = 0x00;
-        pub const PITCH_CONTROL: u8 = 0x01;
-        pub const DATA_OVERRUN_CONTROL: u8 = 0x02;
-        pub const DATA_UNDERRUN_CONTROL: u8 = 0x03;
+        pub const UNDEFINED: u16 = 0x00 << 8;
+        pub const PITCH_CONTROL: u16 = 0x01 << 8;
+        pub const DATA_OVERRUN_CONTROL: u16 = 0x02 << 8;
+        pub const DATA_UNDERRUN_CONTROL: u16 = 0x03 << 8;
     }
 }
 

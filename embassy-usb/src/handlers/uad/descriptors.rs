@@ -561,6 +561,20 @@ impl TerminalDescriptor {
             Self::Output(desc) => desc.terminal_id,
         }
     }
+
+    pub fn terminal_type(&self) -> TerminalType {
+        match self {
+            Self::Input(desc) => desc.terminal_type,
+            Self::Output(desc) => desc.terminal_type,
+        }
+    }
+
+    pub fn clock_source_id(&self) -> u8 {
+        match self {
+            Self::Input(desc) => desc.clock_source_id,
+            Self::Output(desc) => desc.clock_source_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
