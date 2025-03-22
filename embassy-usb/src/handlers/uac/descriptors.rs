@@ -236,10 +236,7 @@ impl AudioInterfaceCollection {
             .next()
             .ok_or(AudioInterfaceError::MissingAudioStreamingClassDescriptor)?;
         if let Ok(class_descriptor) = AudioStreamingClassDescriptor::try_from_bytes(class_descriptor) {
-            trace!(
-                "Found Audio Streaming Class Descriptor: {:#04x}",
-                class_descriptor.format_type
-            );
+            trace!("Found Audio Streaming Class Descriptor: {:?}", class_descriptor.format);
             let mut streaming_interface = AudioStreamingInterface {
                 interface_descriptors: interfaces,
                 class_descriptor: class_descriptor,
@@ -839,8 +836,7 @@ pub struct AudioStreamingInterface {
 pub struct AudioStreamingClassDescriptor {
     pub terminal_link_id: u8,
     pub controls_bitmap: u8,
-    pub format_type: u8,
-    pub format_bitmap: u32,
+    pub format: format_type::Format,
     pub num_channels: u8,
     pub channel_config_bitmap: u32,
     pub channel_name: StringIndex,
@@ -861,11 +857,16 @@ impl USBDescriptor for AudioStreamingClassDescriptor {
         if bytes[2] != as_descriptor::GENERAL {
             return Err(());
         }
+        let format =
+            format_type::Format::from_u32(bytes[5], u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]));
+        if format.is_none() {
+            error!("Invalid format type descriptor: type {:?}", bytes[5]);
+            return Err(());
+        }
         Ok(Self {
             terminal_link_id: bytes[3],
             controls_bitmap: bytes[4],
-            format_type: bytes[5],
-            format_bitmap: u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]),
+            format: format.unwrap(),
             num_channels: bytes[10],
             channel_config_bitmap: u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]),
             channel_name: bytes[15],
@@ -1256,8 +1257,7 @@ mod test {
                     class_descriptor: AudioStreamingClassDescriptor {
                         terminal_link_id: 2,
                         controls_bitmap: 0,
-                        format_type: 1,
-                        format_bitmap: 1,
+                        format: format_type::Format::Type1(format_type::Type1::PCM),
                         num_channels: 16,
                         channel_config_bitmap: 0,
                         channel_name: 18,
@@ -1318,8 +1318,7 @@ mod test {
                     class_descriptor: AudioStreamingClassDescriptor {
                         terminal_link_id: 22,
                         controls_bitmap: 0,
-                        format_type: 1,
-                        format_bitmap: 1,
+                        format: format_type::Format::Type1(format_type::Type1::PCM),
                         num_channels: 16,
                         channel_config_bitmap: 0,
                         channel_name: 50,

@@ -403,6 +403,103 @@ pub mod format_type {
     pub const EXT_I: u8 = 0x81;
     pub const EXT_II: u8 = 0x82;
     pub const EXT_III: u8 = 0x83;
+
+    bitflags! {
+        pub struct Type1: u32 {
+            const PCM = 1 << 0;
+            const PCM8 = 1 << 1;
+            const IEEE_FLOAT = 1 << 2;
+            const ALAW = 1 << 3;
+            const MULAW = 1 << 4;
+            // Reserved. Must be set to 0. D30..D5
+            const TYPE_I_RAW_DATA = 1 << 31;
+        }
+    }
+    bitflags! {
+        pub struct Type2: u32 {
+            const MPEG = 1 << 0;
+            const AC_3 = 1 << 1;
+            const WMA = 1 << 2;
+            const DTS = 1 << 3;
+            // Reserved. Must be set to 0. D30..D4
+            const TYPE_II_RAW_DATA = 1 << 31;
+        }
+    }
+
+    bitflags! {
+        pub struct Type3: u32 {
+            const IEC61937_AC_3 = 1 << 0;
+            const IEC61937_MPEG_1_Layer1 = 1 << 1;
+            const IEC61937_MPEG_1_Layer2_3 = 1 << 2;
+            const IEC61937_MPEG_2_NOEXT = 1 << 2;
+            const IEC61937_MPEG_2_EXT = 1 << 3;
+            const IEC61937_MPEG_2_AAC_ADTS = 1 << 4;
+            const IEC61937_MPEG_2_Layer1_LS = 1 << 5;
+            const IEC61937_MPEG_2_Layer2_3_LS = 1 << 6;
+            const IEC61937_DTS_I = 1 << 7;
+            const IEC61937_DTS_II = 1 << 8;
+            const IEC61937_DTS_III = 1 << 9;
+            const IEC61937_ATRAC = 1 << 10;
+            const IEC61937_ATRAC2_3 = 1 << 11;
+            const TYPE_III_WMA = 1 << 12;
+            // Reserved. Must be set to 0. D31..D13
+        }
+    }
+
+    bitflags! {
+        pub struct Type4: u32 {
+            const PCM = 1 << 0;
+            const PCM8 = 1 << 1;
+            const IEEE_FLOAT = 1 << 2;
+            const ALAW = 1 << 3;
+            const MULAW = 1 << 4;
+            const MPEG = 1 << 5;
+            const AC_3 = 1 << 6;
+            const WMA = 1 << 7;
+            const IEC61937_AC_3 = 1 << 8;
+            const IEC61937_MPEG_1_Layer1 = 1 << 9;
+            const IEC61937_MPEG_1_Layer2_3 = 1 << 10;
+            const IEC61937_MPEG_2_NOEXT = 1 << 10;
+            const IEC61937_MPEG_2_EXT = 1 << 11;
+            const IEC61937_MPEG_2_AAC_ADTS = 1 << 12;
+            const IEC61937_MPEG_2_Layer1_LS = 1 << 13;
+            const IEC61937_MPEG_2_Layer2_3_LS = 1 << 14;
+            const IEC61937_DTS_I = 1 << 15;
+            const IEC61937_DTS_II = 1 << 16;
+            const IEC61937_DTS_III = 1 << 17;
+            const IEC61937_ATRAC = 1 << 18;
+            const IEC61937_ATRAC2_3 = 1 << 19;
+            const TYPE_III_WMA = 1 << 20;
+            const IEC60958_PCM = 1 << 21;
+            // Reserved. Must be set to 0. D31..D22
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Format {
+        Type1(Type1),
+        Type2(Type2),
+        Type3(Type3),
+        Type4(Type4),
+        Type1Extended(Type1),
+        Type2Extended(Type2),
+        Type3Extended(Type3),
+    }
+
+    impl Format {
+        pub fn from_u32(format_type: u8, bitmap: u32) -> Option<Self> {
+            match format_type {
+                I => Some(Self::Type1(Type1::from_bits_truncate(bitmap))),
+                II => Some(Self::Type2(Type2::from_bits_truncate(bitmap))),
+                III => Some(Self::Type3(Type3::from_bits_truncate(bitmap))),
+                IV => Some(Self::Type4(Type4::from_bits_truncate(bitmap))),
+                EXT_I => Some(Self::Type1Extended(Type1::from_bits_truncate(bitmap))),
+                EXT_II => Some(Self::Type2Extended(Type2::from_bits_truncate(bitmap))),
+                EXT_III => Some(Self::Type3Extended(Type3::from_bits_truncate(bitmap))),
+                _ => None,
+            }
+        }
+    }
 }
 
 pub mod terminal_type {
