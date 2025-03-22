@@ -7,8 +7,8 @@ use crate::control::Request;
 
 use super::{EnumerationInfo, RegisterError};
 use aligned::{Aligned, A4};
-use embassy_usb_driver::host::{channel, ChannelError, RequestType, SetupPacket, UsbChannel, UsbHostDriver};
-use embassy_usb_driver::{EndpointInfo, EndpointType};
+use embassy_usb_driver::host::{channel, ChannelError, HostError, RequestType, SetupPacket, UsbChannel, UsbHostDriver};
+use embassy_usb_driver::{Direction, EndpointInfo, EndpointType};
 use heapless::{String, Vec};
 
 const MAX_RANGES: usize = 16;
@@ -18,7 +18,12 @@ const MAX_STRING_BUF_SIZE: usize = 255;
 const MAX_STRING_LENGTH: usize = 127;
 
 pub struct UacHandler<H: UsbHostDriver> {
-    control_channel: H::Channel<channel::Control, channel::InOut>,
+    pub interface_collection: descriptors::AudioInterfaceCollection,
+    pub control_channel: H::Channel<channel::Control, channel::InOut>,
+    pub output_channel: Option<H::Channel<channel::Isochronous, channel::Out>>,
+    pub feedback_channel: Option<H::Channel<channel::Isochronous, channel::In>>,
+    input_terminal_id: u8,
+    output_interface_idx: usize,
 }
 
 #[derive(Debug)]
@@ -29,7 +34,15 @@ pub enum RequestError {
 
 impl<H: UsbHostDriver> UacHandler<H> {
     pub async fn try_register(host: &H, enum_info: EnumerationInfo) -> Result<Self, RegisterError> {
-        let audio_interface_collection =
+        // Steps taken:
+        // 1. Find the first streaming interface with an output endpoint
+        // 2. Connect it to its terminal to find the sampling frequency
+        // 3. Check its format type
+        // 4. Select the right alternate setting for the interface with a SET_INTERFACE request
+        // 5. Allocate up the output channel and the corresponding feedback channel, store on Self
+        // 6. TODO: Send at least <lock durration> of zeroes to ensure the device locks onto the stream
+
+        let interface_collection =
             match descriptors::AudioInterfaceCollection::try_from_configuration(&enum_info.cfg_desc) {
                 Ok(collection) => collection,
                 Err(e) => {
@@ -37,23 +50,51 @@ impl<H: UsbHostDriver> UacHandler<H> {
                     return Err(RegisterError::NoSupportedInterface);
                 }
             };
+        debug!("[UAC] Audio Interface Collection: {:#?}", interface_collection);
 
-        debug!("[UAC] Audio Interface Collection: {:#?}", audio_interface_collection);
-        let input_terminal = audio_interface_collection
+        // Find the first streaming interface with an output endpoint
+        let output_interface_idx = interface_collection
+            .audio_streaming_interfaces
+            .iter()
+            .position(|i| {
+                i.endpoint_descriptor
+                    .map(|e| e.ep_dir() == Direction::Out)
+                    .unwrap_or(false)
+            })
+            .ok_or(RegisterError::NoSupportedInterface)?;
+        let output_interface = &interface_collection.audio_streaming_interfaces[output_interface_idx];
+
+        // Check to see that the terminal link id is valid
+        let input_terminal = interface_collection
             .control_interface
             .terminal_descriptors
-            .iter()
-            .find(|(_, t)| match t {
-                descriptors::TerminalDescriptor::Input(input) => {
-                    input.terminal_type == descriptors::TerminalType::UsbStreaming
-                }
-                _ => false,
-            })
-            .unwrap();
+            .get(&output_interface.class_descriptor.terminal_link_id)
+            .ok_or(RegisterError::NoSupportedInterface)?;
 
         debug!("[UAC] Input Terminal: {:#?}", input_terminal);
 
-        let control_channel = host.alloc_channel::<channel::Control, channel::InOut>(
+        // Check to see that the format is PCM
+        if output_interface.class_descriptor.format != codes::format_type::Format::Type1(codes::format_type::Type1::PCM)
+        {
+            error!(
+                "[UAC] Only PCM format is supported, got {:?}",
+                output_interface.class_descriptor.format
+            );
+            return Err(RegisterError::NoSupportedInterface);
+        }
+
+        // Find the interface with the most endpoints
+        let streaming_interface = output_interface
+            .interface_descriptors
+            .iter()
+            .max_by_key(|i| i.num_endpoints)
+            .ok_or(RegisterError::NoSupportedInterface)?;
+
+        // Allocate the channels
+        let mut output_channel = None;
+        let mut feedback_channel = None;
+        let input_terminal_id = output_interface.class_descriptor.terminal_link_id;
+        let mut control_channel = host.alloc_channel::<channel::Control, channel::InOut>(
             enum_info.device_address,
             &EndpointInfo::new(
                 0.into(),
@@ -62,18 +103,57 @@ impl<H: UsbHostDriver> UacHandler<H> {
             ),
             enum_info.ls_over_fs,
         )?;
-        let mut slf = Self { control_channel };
 
-        let sampling_freq = slf.get_sampling_freq(input_terminal.1.clock_source_id()).await;
-        debug!("[UAC] Current Sampling Frequency: {:?}", sampling_freq);
+        // Select the correct alternate setting
+        let packet = SetupPacket {
+            request_type: RequestType::OUT | RequestType::TYPE_STANDARD | RequestType::RECIPIENT_INTERFACE,
+            request: Request::SET_INTERFACE,
+            value: streaming_interface.alternate_setting as u16,
+            index: streaming_interface.interface_number as u16,
+            length: 0,
+        };
+        control_channel
+            .control_out(&packet, &mut [])
+            .await
+            .map_err(|e| RegisterError::HostError(HostError::ChannelError(e)))?;
+        debug!(
+            "[UAC] Set output interface to alternate setting: {}",
+            streaming_interface.alternate_setting
+        );
 
-        let lang_id = slf.get_supported_language().await;
-        debug!("[UAC] Supported Language: {:?}", lang_id);
+        if streaming_interface.num_endpoints > 0 {
+            output_channel = Some(host.alloc_channel::<channel::Isochronous, channel::Out>(
+                enum_info.device_address,
+                &output_interface.endpoint_descriptor.unwrap().into(),
+                false,
+            )?);
+        }
+        if streaming_interface.num_endpoints > 1 {
+            if let Some(feedback_endpoint) = output_interface.feedback_endpoint_descriptor {
+                feedback_channel = Some(host.alloc_channel::<channel::Isochronous, channel::In>(
+                    enum_info.device_address,
+                    &feedback_endpoint.into(),
+                    false,
+                )?);
+            }
+        }
 
-        let terminal_name = slf.get_string(input_terminal.1.terminal_name(), lang_id.unwrap()).await;
-        debug!("[UAC] Terminal Name: {:?}", terminal_name);
+        Ok(Self {
+            interface_collection,
+            control_channel,
+            output_channel,
+            feedback_channel,
+            input_terminal_id,
+            output_interface_idx,
+        })
+    }
 
-        Ok(slf)
+    pub fn input_terminal(&self) -> &descriptors::TerminalDescriptor {
+        &self.interface_collection.control_interface.terminal_descriptors[&self.input_terminal_id]
+    }
+
+    pub fn output_interface(&self) -> &descriptors::AudioStreamingInterface {
+        &self.interface_collection.audio_streaming_interfaces[self.output_interface_idx]
     }
 
     pub async fn get_supported_language(&mut self) -> Result<u16, RequestError> {
