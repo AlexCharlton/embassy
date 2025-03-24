@@ -7,8 +7,9 @@ use crate::control::Request;
 
 use super::{EnumerationInfo, RegisterError};
 use aligned::{Aligned, A4};
+use embassy_time::{Duration, Instant, Timer};
 use embassy_usb_driver::host::{channel, ChannelError, HostError, RequestType, SetupPacket, UsbChannel, UsbHostDriver};
-use embassy_usb_driver::{Direction, EndpointInfo, EndpointType};
+use embassy_usb_driver::{Direction, EndpointInfo, EndpointType, Speed};
 use heapless::{String, Vec};
 
 const MAX_RANGES: usize = 16;
@@ -24,16 +25,23 @@ pub struct UacHandler<H: UsbHostDriver> {
     pub feedback_channel: Option<H::Channel<channel::Isochronous, channel::In>>,
     input_terminal_id: u8,
     output_interface_idx: usize,
+    speed: Speed,
+    samples_per_microframe: f32,
+    microframes_per_microsecond: f32,
+    last_send_time: Instant,
+    last_feedback_time: Instant,
 }
 
 #[derive(Debug)]
 pub enum RequestError {
     RequestFailed(ChannelError),
+    DeviceDisconnected,
     InvalidResponse,
+    NoSupportedInterface,
 }
 
 impl<H: UsbHostDriver> UacHandler<H> {
-    pub async fn try_register(host: &H, enum_info: EnumerationInfo) -> Result<Self, RegisterError> {
+    pub async fn try_register(host: &H, enum_info: EnumerationInfo, speed: Speed) -> Result<Self, RegisterError> {
         // Steps taken:
         // 1. Find the first streaming interface with an output endpoint
         // 2. Connect it to its terminal to find the sampling frequency
@@ -145,7 +153,137 @@ impl<H: UsbHostDriver> UacHandler<H> {
             feedback_channel,
             input_terminal_id,
             output_interface_idx,
+            speed,
+            samples_per_microframe: 0.0,
+            microframes_per_microsecond: 1.0 / (if speed == Speed::High { 125.0 } else { 1000.0 }),
+            last_feedback_time: Instant::from_ticks(0),
+            last_send_time: Instant::from_ticks(0),
         })
+    }
+
+    // TODO: This shouldn't hold onto &mut self
+    // Maybe TODO: should this handle disconnects in some way?
+    pub async fn output_stream(&mut self, mut callback: impl FnMut(&mut [u8])) -> Result<(), RequestError> {
+        // First, update the sampling frequency
+        self.update_sampling_freq().await?;
+
+        if self.output_channel.is_none() || self.feedback_channel.is_none() {
+            error!("[UAC] Output or feedback channel not allocated");
+            return Err(RequestError::DeviceDisconnected);
+        }
+
+        let bytes_per_sample = match self.output_interface().format_type_descriptor {
+            Some(descriptors::FormatTypeDescriptor::I(descriptors::FormatTypeI { subslot_size, .. })) => {
+                subslot_size as usize
+            }
+            _ => return Err(RequestError::NoSupportedInterface),
+        };
+        let max_bytes_per_packet = self.output_interface().endpoint_descriptor.unwrap().max_packet_size as usize;
+
+        let mut output_buffer = Aligned::<A4, _>([0; 1024]);
+        let lock_delay = self.lock_delay();
+
+        // First, send the lock request
+        let data = &output_buffer.as_mut_slice()[..(lock_delay as usize * bytes_per_sample).min(max_bytes_per_packet)]; // Should already be zeroed out
+        self.output_channel
+            .as_mut()
+            .unwrap()
+            .request_out(data)
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        debug!("[UAC] Lock request sent, starting stream");
+
+        // Readjust the max bytes per packet to be a multiple of the frame size
+        let max_samples_per_packet =
+            max_bytes_per_packet / (bytes_per_sample * self.output_interface().class_descriptor.num_channels as usize);
+        let max_bytes_per_packet =
+            max_samples_per_packet * bytes_per_sample * self.output_interface().class_descriptor.num_channels as usize;
+        trace!(
+            "[UAC] Max bytes per packet: {}; max samples per packet: {}",
+            max_bytes_per_packet,
+            max_samples_per_packet
+        );
+        let mut sample_accumulator = 0.0;
+        loop {
+            // Does the sampling frequency need to be updated?
+            if self.last_feedback_time.elapsed() > Duration::from_millis(1) {
+                self.update_sampling_freq().await?;
+            }
+            let mut microframes_elapsed = self.microframes_elapsed();
+            // Do we need to wait until the next frame?
+            if microframes_elapsed < 1.0 {
+                Timer::after(Duration::from_micros(
+                    ((1.0 - microframes_elapsed) / self.microframes_per_microsecond) as u64,
+                ))
+                .await;
+                microframes_elapsed = self.microframes_elapsed();
+            }
+            // Update the last send time now, since this is the time we used to calculate the samples to send
+            self.last_send_time = Instant::now();
+
+            // Figure out how many samples to send
+            sample_accumulator += self.samples_per_microframe * microframes_elapsed;
+            let samples_to_send = sample_accumulator as usize;
+            sample_accumulator -= samples_to_send as f32;
+            let mut bytes_to_send =
+                samples_to_send * self.output_interface().class_descriptor.num_channels as usize * bytes_per_sample;
+            // Chunk the data if it's too large
+            // trace!("[UAC] Bytes to send: {}", bytes_to_send);
+            while bytes_to_send > 0 {
+                let num_bytes = max_bytes_per_packet.min(bytes_to_send);
+                // Fill the buffer with data
+                let data = &mut output_buffer.as_mut_slice()[..num_bytes];
+                data.fill(0);
+
+                callback(data);
+                bytes_to_send -= num_bytes;
+
+                // Send the data
+                self.output_channel
+                    .as_mut()
+                    .unwrap()
+                    .request_out(data)
+                    .await
+                    .map_err(|e| RequestError::RequestFailed(e))?;
+            }
+        }
+    }
+
+    fn microframes_elapsed(&self) -> f32 {
+        if self.last_send_time == Instant::from_ticks(0) {
+            // We're at the start of the stream, so we want to send 1 microframe
+            1.0
+        } else {
+            self.last_send_time.elapsed().as_micros() as f32 * self.microframes_per_microsecond
+        }
+    }
+
+    // Returns the lock delay in samples
+    fn lock_delay(&self) -> u16 {
+        if let Some(desc) = &self.output_interface().audio_endpoint_descriptor {
+            if desc.lock_delay_units == 2 {
+                desc.lock_delay
+            } else if desc.lock_delay_units == 1 {
+                (desc.lock_delay as f32 * self.samples_per_frame()) as u16
+            } else {
+                0
+            }
+        } else {
+            0
+        }
+    }
+
+    fn microframes_per_frame(&self) -> u16 {
+        if self.speed == Speed::High {
+            8
+        } else {
+            1
+        }
+    }
+
+    fn samples_per_frame(&self) -> f32 {
+        self.samples_per_microframe * self.microframes_per_frame() as f32
     }
 
     pub fn input_terminal(&self) -> &descriptors::TerminalDescriptor {
@@ -155,6 +293,36 @@ impl<H: UsbHostDriver> UacHandler<H> {
     pub fn output_interface(&self) -> &descriptors::AudioStreamingInterface {
         &self.interface_collection.audio_streaming_interfaces[self.output_interface_idx]
     }
+
+    pub async fn get_sampling_freq(&mut self, terminal_id: u8) -> Result<u32, RequestError> {
+        self.get_curr_entity3(
+            codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL,
+            0,
+            terminal_id,
+            0,
+        )
+        .await
+    }
+
+    pub async fn update_sampling_freq(&mut self) -> Result<(), RequestError> {
+        let mut feedback_buffer = Aligned::<A4, _>([0; 4]);
+        let len = self
+            .feedback_channel
+            .as_mut()
+            .unwrap()
+            .request_in(feedback_buffer.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+        if let Some(samples_per_microframe) = parse_feedback(self.speed, &feedback_buffer.as_slice()[..len]) {
+            self.samples_per_microframe = samples_per_microframe;
+            debug!("[UAC] Samples per microframe: {}", self.samples_per_microframe);
+        }
+        self.last_feedback_time = Instant::now();
+        Ok(())
+    }
+
+    //-------------------------------------------------------
+    // Getters for the control interface
 
     pub async fn get_supported_language(&mut self) -> Result<u16, RequestError> {
         let packet = SetupPacket {
@@ -236,16 +404,6 @@ impl<H: UsbHostDriver> UacHandler<H> {
         }
 
         Ok(str)
-    }
-
-    pub async fn get_sampling_freq(&mut self, terminal_id: u8) -> Result<u32, RequestError> {
-        self.get_curr_entity3(
-            codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL,
-            0,
-            terminal_id,
-            0,
-        )
-        .await
     }
 
     pub async fn get_curr_entity1(
@@ -404,6 +562,44 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(layout)
     }
 }
+
+/// Parse USB feedback endpoint response into a floating point number.
+/// Returns the number of samples per USB frame (full-speed) or microframe (high-speed).
+pub fn parse_feedback(speed: Speed, data: &[u8]) -> Option<f32> {
+    match speed {
+        Speed::Low => None, // Low-speed doesn't support isochronous transfers.
+
+        Speed::High => {
+            if data.len() < 4 {
+                return None;
+            }
+
+            let fractional_part = u16::from_le_bytes([data[0], data[1]]);
+            let integer_part = u16::from_le_bytes([data[2], data[3]]);
+            // Convert fractional part to float (divide by 2^16 since it's a 16-bit fraction)
+            Some(integer_part as f32 + (fractional_part as f32 / 65536.0))
+        }
+
+        Speed::Full => {
+            if data.len() < 3 {
+                return None;
+            }
+
+            // USB 2.0 spec says 10.14 fixed point, left-justified in 24 bits
+            // So we take the 3 bytes and shift left by 2 bits to convert to 10.16-style format
+            let raw = ((data[2] as u32) << 16) | ((data[1] as u32) << 8) | data[0] as u32;
+            let shifted = raw << 2;
+
+            let fractional_part = (shifted & 0xFFFF) as u16;
+            let integer_part = (shifted >> 16) as u16;
+            // Convert fractional part to float (divide by 2^16 since it's a 16-bit fraction)
+            Some(integer_part as f32 + (fractional_part as f32 / 65536.0))
+        }
+    }
+}
+
+//-------------------------------------------------------
+// Response types for the control interface
 
 #[derive(Debug)]
 pub struct Layout1ParameterBlock {
