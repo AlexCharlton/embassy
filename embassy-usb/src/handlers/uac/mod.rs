@@ -28,7 +28,8 @@ pub struct UacHandler<H: UsbHostDriver> {
     speed: Speed,
     samples_per_microframe: f32,
     microframes_per_microsecond: f32,
-    last_send_time: Instant,
+    send_start: Instant,
+    num_frames: u64,
     last_feedback_time: Instant,
 }
 
@@ -48,7 +49,6 @@ impl<H: UsbHostDriver> UacHandler<H> {
         // 3. Check its format type
         // 4. Select the right alternate setting for the interface with a SET_INTERFACE request
         // 5. Allocate up the output channel and the corresponding feedback channel, store on Self
-        // 6. TODO: Send at least <lock durration> of zeroes to ensure the device locks onto the stream
 
         let interface_collection =
             match descriptors::AudioInterfaceCollection::try_from_configuration(&enum_info.cfg_desc) {
@@ -156,8 +156,9 @@ impl<H: UsbHostDriver> UacHandler<H> {
             speed,
             samples_per_microframe: 0.0,
             microframes_per_microsecond: 1.0 / (if speed == Speed::High { 125.0 } else { 1000.0 }),
+            send_start: Instant::from_ticks(0),
+            num_frames: 0,
             last_feedback_time: Instant::from_ticks(0),
-            last_send_time: Instant::from_ticks(0),
         })
     }
 
@@ -195,10 +196,9 @@ impl<H: UsbHostDriver> UacHandler<H> {
         debug!("[UAC] Lock request sent, starting stream");
 
         // Readjust the max bytes per packet to be a multiple of the frame size
-        let max_samples_per_packet =
-            max_bytes_per_packet / (bytes_per_sample * self.output_interface().class_descriptor.num_channels as usize);
-        let max_bytes_per_packet =
-            max_samples_per_packet * bytes_per_sample * self.output_interface().class_descriptor.num_channels as usize;
+        let bytes_per_frame = bytes_per_sample * self.output_interface().class_descriptor.num_channels as usize;
+        let max_samples_per_packet = max_bytes_per_packet / bytes_per_frame;
+        let max_bytes_per_packet = max_samples_per_packet * bytes_per_frame;
         trace!(
             "[UAC] Max bytes per packet: {}; max samples per packet: {}",
             max_bytes_per_packet,
@@ -210,26 +210,25 @@ impl<H: UsbHostDriver> UacHandler<H> {
             if self.last_feedback_time.elapsed() > Duration::from_millis(1) {
                 self.update_sampling_freq().await?;
             }
-            let mut microframes_elapsed = self.microframes_elapsed();
+            let mut microframes_elapsed = self.microframes_elapsed_since_last_frame();
+
             // Do we need to wait until the next frame?
             if microframes_elapsed < 1.0 {
                 Timer::after(Duration::from_micros(
                     ((1.0 - microframes_elapsed) / self.microframes_per_microsecond) as u64,
                 ))
                 .await;
-                microframes_elapsed = self.microframes_elapsed();
+                microframes_elapsed = self.microframes_elapsed_since_last_frame();
             }
-            // Update the last send time now, since this is the time we used to calculate the samples to send
-            self.last_send_time = Instant::now();
+            let num_microframes_elapsed = microframes_elapsed as u64;
 
             // Figure out how many samples to send
-            sample_accumulator += self.samples_per_microframe * microframes_elapsed;
+            sample_accumulator += self.samples_per_microframe * num_microframes_elapsed as f32;
             let samples_to_send = sample_accumulator as usize;
             sample_accumulator -= samples_to_send as f32;
-            let mut bytes_to_send =
-                samples_to_send * self.output_interface().class_descriptor.num_channels as usize * bytes_per_sample;
-            // Chunk the data if it's too large
+            let mut bytes_to_send = samples_to_send * bytes_per_frame;
             // trace!("[UAC] Bytes to send: {}", bytes_to_send);
+            // Chunk the data if it's too large
             while bytes_to_send > 0 {
                 let num_bytes = max_bytes_per_packet.min(bytes_to_send);
                 // Fill the buffer with data
@@ -240,22 +239,34 @@ impl<H: UsbHostDriver> UacHandler<H> {
                 bytes_to_send -= num_bytes;
 
                 // Send the data
-                self.output_channel
+                let _len = self
+                    .output_channel
                     .as_mut()
                     .unwrap()
                     .request_out(data)
                     .await
                     .map_err(|e| RequestError::RequestFailed(e))?;
             }
+
+            self.num_frames += num_microframes_elapsed;
         }
     }
 
-    fn microframes_elapsed(&self) -> f32 {
-        if self.last_send_time == Instant::from_ticks(0) {
+    fn microframes_elapsed_since_last_frame(&self) -> f32 {
+        if self.send_start == Instant::from_ticks(0) {
             // We're at the start of the stream, so we want to send 1 microframe
             1.0
         } else {
-            self.last_send_time.elapsed().as_micros() as f32 * self.microframes_per_microsecond
+            (self.send_start.elapsed().as_micros() - (self.num_frames * self.microseconds_per_microframe())) as f32
+                * self.microframes_per_microsecond
+        }
+    }
+
+    fn microseconds_per_microframe(&self) -> u64 {
+        if self.speed == Speed::High {
+            125
+        } else {
+            1000
         }
     }
 
@@ -315,7 +326,7 @@ impl<H: UsbHostDriver> UacHandler<H> {
             .map_err(|e| RequestError::RequestFailed(e))?;
         if let Some(samples_per_microframe) = parse_feedback(self.speed, &feedback_buffer.as_slice()[..len]) {
             self.samples_per_microframe = samples_per_microframe;
-            debug!("[UAC] Samples per microframe: {}", self.samples_per_microframe);
+            trace!("[UAC] Samples per microframe: {}", self.samples_per_microframe);
         }
         self.last_feedback_time = Instant::now();
         Ok(())
