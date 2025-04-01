@@ -26,11 +26,6 @@ pub struct UacHandler<H: UsbHostDriver> {
     input_terminal_id: u8,
     output_interface_idx: usize,
     speed: Speed,
-    samples_per_microframe: f32,
-    microframes_per_microsecond: f32,
-    send_start: Instant,
-    num_frames: u64,
-    last_feedback_time: Instant,
 }
 
 #[derive(Debug)]
@@ -42,7 +37,7 @@ pub enum RequestError {
 }
 
 impl<H: UsbHostDriver> UacHandler<H> {
-    pub async fn try_register(host: &H, enum_info: EnumerationInfo, speed: Speed) -> Result<Self, RegisterError> {
+    pub async fn try_register(host: &H, enum_info: EnumerationInfo) -> Result<Self, RegisterError> {
         // Steps taken:
         // 1. Find the first streaming interface with an output endpoint
         // 2. Connect it to its terminal to find the sampling frequency
@@ -153,148 +148,50 @@ impl<H: UsbHostDriver> UacHandler<H> {
             feedback_channel,
             input_terminal_id,
             output_interface_idx,
-            speed,
-            samples_per_microframe: 0.0,
-            microframes_per_microsecond: 1.0 / (if speed == Speed::High { 125.0 } else { 1000.0 }),
-            send_start: Instant::from_ticks(0),
-            num_frames: 0,
-            last_feedback_time: Instant::from_ticks(0),
+            speed: enum_info.speed,
         })
     }
 
-    // TODO: This shouldn't hold onto &mut self
-    // Maybe TODO: should this handle disconnects in some way?
-    pub async fn output_stream(&mut self, mut callback: impl FnMut(&mut [u8])) -> Result<(), RequestError> {
-        // First, update the sampling frequency
-        self.update_sampling_freq().await?;
-
+    pub fn output(&mut self) -> Result<UacOut<H>, RequestError> {
         if self.output_channel.is_none() || self.feedback_channel.is_none() {
             error!("[UAC] Output or feedback channel not allocated");
             return Err(RequestError::DeviceDisconnected);
         }
-
-        let bytes_per_sample = match self.output_interface().format_type_descriptor {
+        let output_interface = self.output_interface();
+        let num_channels = output_interface.class_descriptor.num_channels;
+        let lock_delay = if let Some(desc) = &output_interface.audio_endpoint_descriptor {
+            if desc.lock_delay_units == 1 {
+                LockDelay::Milliseconds(desc.lock_delay)
+            } else if desc.lock_delay_units == 2 {
+                LockDelay::Samples(desc.lock_delay)
+            } else {
+                LockDelay::Samples(0)
+            }
+        } else {
+            LockDelay::Samples(0)
+        };
+        let bytes_per_sample = match output_interface.format_type_descriptor {
             Some(descriptors::FormatTypeDescriptor::I(descriptors::FormatTypeI { subslot_size, .. })) => {
                 subslot_size as usize
             }
             _ => return Err(RequestError::NoSupportedInterface),
         };
-        let max_bytes_per_packet = self.output_interface().endpoint_descriptor.unwrap().max_packet_size as usize;
+        let max_bytes_per_packet = output_interface.endpoint_descriptor.unwrap().max_packet_size as usize;
 
-        let mut output_buffer = Aligned::<A4, _>([0; 1024]);
-        let lock_delay = self.lock_delay();
-
-        // First, send the lock request
-        let data = &output_buffer.as_mut_slice()[..(lock_delay as usize * bytes_per_sample).min(max_bytes_per_packet)]; // Should already be zeroed out
-        self.output_channel
-            .as_mut()
-            .unwrap()
-            .request_out(data)
-            .await
-            .map_err(|e| RequestError::RequestFailed(e))?;
-
-        debug!("[UAC] Lock request sent, starting stream");
-
-        // Readjust the max bytes per packet to be a multiple of the frame size
-        let bytes_per_frame = bytes_per_sample * self.output_interface().class_descriptor.num_channels as usize;
-        let max_samples_per_packet = max_bytes_per_packet / bytes_per_frame;
-        let max_bytes_per_packet = max_samples_per_packet * bytes_per_frame;
-        trace!(
-            "[UAC] Max bytes per packet: {}; max samples per packet: {}",
+        Ok(UacOut::<H> {
+            output_channel: self.output_channel.take().unwrap(),
+            feedback_channel: self.feedback_channel.take().unwrap(),
+            speed: self.speed,
+            samples_per_microframe: 0.0,
+            microframes_per_microsecond: 1.0 / (if self.speed == Speed::High { 125.0 } else { 1000.0 }),
+            send_start: Instant::from_ticks(0),
+            num_frames: 0,
+            last_feedback_time: Instant::from_ticks(0),
+            lock_delay,
+            num_channels,
+            bytes_per_sample,
             max_bytes_per_packet,
-            max_samples_per_packet
-        );
-        let mut sample_accumulator = 0.0;
-        loop {
-            // Does the sampling frequency need to be updated?
-            if self.last_feedback_time.elapsed() > Duration::from_millis(1) {
-                self.update_sampling_freq().await?;
-            }
-            let mut microframes_elapsed = self.microframes_elapsed_since_last_frame();
-
-            // Do we need to wait until the next frame?
-            if microframes_elapsed < 1.0 {
-                Timer::after(Duration::from_micros(
-                    ((1.0 - microframes_elapsed) / self.microframes_per_microsecond) as u64,
-                ))
-                .await;
-                microframes_elapsed = self.microframes_elapsed_since_last_frame();
-            }
-            let num_microframes_elapsed = microframes_elapsed as u64;
-
-            // Figure out how many samples to send
-            sample_accumulator += self.samples_per_microframe * num_microframes_elapsed as f32;
-            let samples_to_send = sample_accumulator as usize;
-            sample_accumulator -= samples_to_send as f32;
-            let mut bytes_to_send = samples_to_send * bytes_per_frame;
-            // trace!("[UAC] Bytes to send: {}", bytes_to_send);
-            // Chunk the data if it's too large
-            while bytes_to_send > 0 {
-                let num_bytes = max_bytes_per_packet.min(bytes_to_send);
-                // Fill the buffer with data
-                let data = &mut output_buffer.as_mut_slice()[..num_bytes];
-                data.fill(0);
-
-                callback(data);
-                bytes_to_send -= num_bytes;
-
-                // Send the data
-                let _len = self
-                    .output_channel
-                    .as_mut()
-                    .unwrap()
-                    .request_out(data)
-                    .await
-                    .map_err(|e| RequestError::RequestFailed(e))?;
-            }
-
-            self.num_frames += num_microframes_elapsed;
-        }
-    }
-
-    fn microframes_elapsed_since_last_frame(&self) -> f32 {
-        if self.send_start == Instant::from_ticks(0) {
-            // We're at the start of the stream, so we want to send 1 microframe
-            1.0
-        } else {
-            (self.send_start.elapsed().as_micros() - (self.num_frames * self.microseconds_per_microframe())) as f32
-                * self.microframes_per_microsecond
-        }
-    }
-
-    fn microseconds_per_microframe(&self) -> u64 {
-        if self.speed == Speed::High {
-            125
-        } else {
-            1000
-        }
-    }
-
-    // Returns the lock delay in samples
-    fn lock_delay(&self) -> u16 {
-        if let Some(desc) = &self.output_interface().audio_endpoint_descriptor {
-            if desc.lock_delay_units == 2 {
-                desc.lock_delay
-            } else if desc.lock_delay_units == 1 {
-                (desc.lock_delay as f32 * self.samples_per_frame()) as u16
-            } else {
-                0
-            }
-        } else {
-            0
-        }
-    }
-
-    fn microframes_per_frame(&self) -> u16 {
-        if self.speed == Speed::High {
-            8
-        } else {
-            1
-        }
-    }
-
-    fn samples_per_frame(&self) -> f32 {
-        self.samples_per_microframe * self.microframes_per_frame() as f32
+        })
     }
 
     pub fn input_terminal(&self) -> &descriptors::TerminalDescriptor {
@@ -315,25 +212,9 @@ impl<H: UsbHostDriver> UacHandler<H> {
         .await
     }
 
-    pub async fn update_sampling_freq(&mut self) -> Result<(), RequestError> {
-        let mut feedback_buffer = Aligned::<A4, _>([0; 4]);
-        let len = self
-            .feedback_channel
-            .as_mut()
-            .unwrap()
-            .request_in(feedback_buffer.as_mut_slice())
-            .await
-            .map_err(|e| RequestError::RequestFailed(e))?;
-        if let Some(samples_per_microframe) = parse_feedback(self.speed, &feedback_buffer.as_slice()[..len]) {
-            self.samples_per_microframe = samples_per_microframe;
-            trace!("[UAC] Samples per microframe: {}", self.samples_per_microframe);
-        }
-        self.last_feedback_time = Instant::now();
-        Ok(())
-    }
-
     //-------------------------------------------------------
-    // Getters for the control interface
+    // MARK: Getters
+    // For the control interface
 
     pub async fn get_supported_language(&mut self) -> Result<u16, RequestError> {
         let packet = SetupPacket {
@@ -574,6 +455,156 @@ impl<H: UsbHostDriver> UacHandler<H> {
     }
 }
 
+//-------------------------------------------------------
+// MARK: Output stream
+
+pub struct UacOut<H: UsbHostDriver> {
+    pub output_channel: H::Channel<channel::Isochronous, channel::Out>,
+    pub feedback_channel: H::Channel<channel::Isochronous, channel::In>,
+    speed: Speed,
+    samples_per_microframe: f32,
+    microframes_per_microsecond: f32,
+    send_start: Instant,
+    num_frames: u64,
+    last_feedback_time: Instant,
+    lock_delay: LockDelay,
+    num_channels: u8,
+    bytes_per_sample: usize,
+    max_bytes_per_packet: usize,
+}
+
+enum LockDelay {
+    Milliseconds(u16),
+    Samples(u16),
+}
+
+impl<H: UsbHostDriver> UacOut<H> {
+    // Maybe TODO: should this handle disconnects in some way?
+    pub async fn output_stream(&mut self, mut callback: impl FnMut(&mut [u8])) -> Result<(), RequestError> {
+        // First, update the sampling frequency
+        self.update_sampling_freq().await?;
+
+        let mut output_buffer = Aligned::<A4, _>([0; 1024]);
+        let lock_delay = self.lock_delay_samples();
+
+        // First, send the lock request
+        let data = &output_buffer.as_mut_slice()
+            [..(lock_delay as usize * self.bytes_per_sample).min(self.max_bytes_per_packet)]; // Should already be zeroed out
+        self.output_channel
+            .request_out(data)
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+
+        debug!("[UAC] Lock request sent, starting stream");
+
+        // Readjust the max bytes per packet to be a multiple of the frame size
+        let bytes_per_frame = self.bytes_per_sample * self.num_channels as usize;
+        let max_samples_per_packet = self.max_bytes_per_packet / bytes_per_frame;
+        let max_bytes_per_packet = max_samples_per_packet * bytes_per_frame;
+        trace!(
+            "[UAC] Max bytes per packet: {}; max samples per packet: {}",
+            max_bytes_per_packet,
+            max_samples_per_packet
+        );
+        let mut sample_accumulator = 0.0;
+        loop {
+            // Does the sampling frequency need to be updated?
+            if self.last_feedback_time.elapsed() > Duration::from_millis(1) {
+                self.update_sampling_freq().await?;
+            }
+            let mut microframes_elapsed = self.microframes_elapsed_since_last_frame();
+
+            // Do we need to wait until the next frame?
+            if microframes_elapsed < 1.0 {
+                Timer::after(Duration::from_micros(
+                    ((1.0 - microframes_elapsed) / self.microframes_per_microsecond) as u64,
+                ))
+                .await;
+                microframes_elapsed = self.microframes_elapsed_since_last_frame();
+            }
+            let num_microframes_elapsed = microframes_elapsed as u64;
+
+            // Figure out how many samples to send
+            sample_accumulator += self.samples_per_microframe * num_microframes_elapsed as f32;
+            let samples_to_send = sample_accumulator as usize;
+            sample_accumulator -= samples_to_send as f32;
+            let mut bytes_to_send = samples_to_send * bytes_per_frame;
+            // trace!("[UAC] Bytes to send: {}", bytes_to_send);
+            // Chunk the data if it's too large
+            while bytes_to_send > 0 {
+                let num_bytes = max_bytes_per_packet.min(bytes_to_send);
+                // Fill the buffer with data
+                let data = &mut output_buffer.as_mut_slice()[..num_bytes];
+                data.fill(0);
+
+                callback(data);
+                bytes_to_send -= num_bytes;
+
+                // Send the data
+                let _len = self
+                    .output_channel
+                    .request_out(data)
+                    .await
+                    .map_err(|e| RequestError::RequestFailed(e))?;
+            }
+
+            self.num_frames += num_microframes_elapsed;
+        }
+    }
+
+    pub async fn update_sampling_freq(&mut self) -> Result<(), RequestError> {
+        let mut feedback_buffer = Aligned::<A4, _>([0; 4]);
+        let len = self
+            .feedback_channel
+            .request_in(feedback_buffer.as_mut_slice())
+            .await
+            .map_err(|e| RequestError::RequestFailed(e))?;
+        if let Some(samples_per_microframe) = parse_feedback(self.speed, &feedback_buffer.as_slice()[..len]) {
+            self.samples_per_microframe = samples_per_microframe;
+            trace!("[UAC] Samples per microframe: {}", self.samples_per_microframe);
+        }
+        self.last_feedback_time = Instant::now();
+        Ok(())
+    }
+
+    fn microframes_elapsed_since_last_frame(&self) -> f32 {
+        if self.send_start == Instant::from_ticks(0) {
+            // We're at the start of the stream, so we want to send 1 microframe
+            1.0
+        } else {
+            (self.send_start.elapsed().as_micros() - (self.num_frames * self.microseconds_per_microframe())) as f32
+                * self.microframes_per_microsecond
+        }
+    }
+
+    fn microseconds_per_microframe(&self) -> u64 {
+        if self.speed == Speed::High {
+            125
+        } else {
+            1000
+        }
+    }
+
+    fn lock_delay_samples(&self) -> u16 {
+        match self.lock_delay {
+            LockDelay::Milliseconds(ms) => (ms as f32 * self.samples_per_frame()) as u16,
+            LockDelay::Samples(samples) => samples,
+        }
+    }
+
+    fn microframes_per_frame(&self) -> u16 {
+        if self.speed == Speed::High {
+            8
+        } else {
+            1
+        }
+    }
+
+    fn samples_per_frame(&self) -> f32 {
+        self.samples_per_microframe * self.microframes_per_frame() as f32
+    }
+}
+
 /// Parse USB feedback endpoint response into a floating point number.
 /// Returns the number of samples per USB frame (full-speed) or microframe (high-speed).
 pub fn parse_feedback(speed: Speed, data: &[u8]) -> Option<f32> {
@@ -610,7 +641,8 @@ pub fn parse_feedback(speed: Speed, data: &[u8]) -> Option<f32> {
 }
 
 //-------------------------------------------------------
-// Response types for the control interface
+// MARK: Response types
+// For the control interface
 
 #[derive(Debug)]
 pub struct Layout1ParameterBlock {
