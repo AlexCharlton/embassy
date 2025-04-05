@@ -3,7 +3,7 @@ use embassy_usb_driver::{host::HostError, Direction, EndpointInfo, EndpointType}
 use heapless::Vec;
 
 pub(crate) const DEFAULT_MAX_DESCRIPTOR_SIZE: usize = 512;
-type StringIndex = u8;
+pub type StringIndex = u8;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -200,6 +200,29 @@ impl<'a> Iterator for InterfaceIterator<'a> {
     }
 }
 
+pub struct DescriptorIterator<'a> {
+    buffer: &'a [u8],
+}
+
+impl<'a> Iterator for DescriptorIterator<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.buffer.len() == 0 {
+            None
+        } else {
+            let len = self.buffer[0] as usize;
+            if len == 0 {
+                None
+            } else {
+                let res = &self.buffer[..len];
+                self.buffer = &self.buffer[len..];
+                Some(res)
+            }
+        }
+    }
+}
+
 impl<'a> ConfigurationDescriptor<'a> {
     /// Parses a full Configuration Descriptor with reference to sub-descriptors
     pub fn try_from_slice(buf: &'a [u8]) -> Result<ConfigurationDescriptor<'a>, HostError> {
@@ -231,6 +254,11 @@ impl<'a> ConfigurationDescriptor<'a> {
             offset: 0,
             cfg_desc: self,
         }
+    }
+
+    /// Iterate over all descriptors of this Configuration
+    pub fn iter_descriptors(&'a self) -> DescriptorIterator<'a> {
+        DescriptorIterator { buffer: &self.buffer }
     }
 
     /// Try to find and parse the interface with interface number `index`
@@ -454,7 +482,7 @@ impl<'a> InterfaceDescriptor<'a> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct EndpointDescriptor {
     /// Length of this descriptor in bytes.
