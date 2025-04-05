@@ -10,6 +10,7 @@ use crate::host::ControlChannelExt;
 
 pub mod hub;
 pub mod kbd;
+pub mod uac;
 
 pub struct DeviceFilter {
     /// Device base-class, 0 would mean it's defined on an interface-level
