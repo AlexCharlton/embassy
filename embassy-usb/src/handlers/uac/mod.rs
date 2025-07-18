@@ -1,6 +1,37 @@
+//! USB Audio Class (UAC) handler module.
+//!
+//! This module provides functionality for interacting with USB Audio Class devices,
+//! including device registration, control requests, and audio streaming.
+//!
+//! # Overview
+//!
+//! The UAC handler supports:
+//! - Device enumeration and interface discovery
+//! - Control requests for audio parameters (volume, mute, sampling frequency, etc.)
+//! - Isochronous audio streaming with feedback
+//! - String descriptor retrieval
+//! - Range queries for supported parameter values
+//!
+//! See the [UAC specification](https://www.usb.org/sites/default/files/audio10.pdf) for more details.
+//!
+//! # Usage
+//!
+//! ```rust
+//! // Register a UAC device
+//! let handler = UacHandler::try_register(host, enum_info).await?;
+//!
+//! // Get current sampling frequency
+//! let freq = handler.get_sampling_freq(terminal_id).await?;
+//!
+//! // Start audio output stream. The callback is called repeatedly whenever the buffer is ready to be filled.
+//! let mut output = handler.output()?;
+//! output.output_stream(|buffer| {
+//!     // Fill buffer with audio data
+//! }).await?;
+//! ```
+
 #[allow(missing_docs)]
 pub mod codes;
-#[allow(missing_docs)]
 pub mod descriptors;
 
 use crate::control::Request;
@@ -19,25 +50,44 @@ const MAX_STRING_BUF_SIZE: usize = 255;
 // But because these are UTF-16 strings, we can only store 127 characters (first two bytes are part of the header)
 const MAX_STRING_LENGTH: usize = 127;
 
+/// Handler for USB Audio Class (UAC) devices, providing control and streaming functionality.
+///
+/// This struct manages the USB channels and interface descriptors required to interact with
+/// a UAC device, including control, output, and feedback channels.
 pub struct UacHandler<H: UsbHostDriver> {
+    /// Collection of audio interface descriptors parsed from the device configuration.
     pub interface_collection: descriptors::AudioInterfaceCollection,
+    /// Control channel for sending standard and class-specific requests.
     pub control_channel: H::Channel<channel::Control, channel::InOut>,
+    /// Output channel for isochronous audio streaming (if available).
     pub output_channel: Option<H::Channel<channel::Isochronous, channel::Out>>,
+    /// Feedback channel for isochronous feedback endpoint (if available).
     pub feedback_channel: Option<H::Channel<channel::Isochronous, channel::In>>,
     input_terminal_id: u8,
     output_interface_idx: usize,
     speed: Speed,
 }
 
+/// Errors that can occur during UAC request handling.
 #[derive(Debug)]
 pub enum RequestError {
+    /// The request failed due to a channel error.
     RequestFailed(ChannelError),
+    /// The device was disconnected during the operation.
     DeviceDisconnected,
+    /// The device returned an invalid or unexpected response.
     InvalidResponse,
+    /// No supported interface was found on the device.
     NoSupportedInterface,
 }
 
 impl<H: UsbHostDriver> UacHandler<H> {
+    /// Attempts to register a UAC device and allocate necessary channels.
+    ///
+    /// This method parses the device's configuration, finds a suitable streaming interface,
+    /// and allocates output and feedback channels as needed.
+    ///
+    /// Returns a new [`UacHandler`] on success, or a [`RegisterError`] if registration fails.
     pub async fn try_register(host: &H, enum_info: EnumerationInfo) -> Result<Self, RegisterError> {
         // Steps taken:
         // 1. Find the first streaming interface with an output endpoint
@@ -157,6 +207,9 @@ impl<H: UsbHostDriver> UacHandler<H> {
         })
     }
 
+    /// Returns a [`UacOut`] object for audio output streaming.
+    ///
+    /// Returns an error if the output or feedback channel is not allocated or if the interface is unsupported.
     pub fn output(&mut self) -> Result<UacOut<H>, RequestError> {
         if self.output_channel.is_none() || self.feedback_channel.is_none() {
             error!("[UAC] Output or feedback channel not allocated");
@@ -199,14 +252,19 @@ impl<H: UsbHostDriver> UacHandler<H> {
         })
     }
 
+    /// Returns a reference to the input terminal descriptor associated with this handler.
     pub fn input_terminal(&self) -> &descriptors::TerminalDescriptor {
         &self.interface_collection.control_interface.terminal_descriptors[&self.input_terminal_id]
     }
 
+    /// Returns a reference to the output audio streaming interface descriptor.
     pub fn output_interface(&self) -> &descriptors::AudioStreamingInterface {
         &self.interface_collection.audio_streaming_interfaces[self.output_interface_idx]
     }
 
+    /// Retrieves the current sampling frequency from the specified terminal entity.
+    ///
+    /// Returns the sampling frequency in Hz, or an error if the request fails.
     pub async fn get_sampling_freq(&mut self, terminal_id: u8) -> Result<u32, RequestError> {
         self.get_curr_entity3(
             codes::control_selector::clock_source::SAMPLING_FREQ_CONTROL,
@@ -221,6 +279,9 @@ impl<H: UsbHostDriver> UacHandler<H> {
     // MARK: Getters
     // For the control interface
 
+    /// Retrieves the supported language ID from the device.
+    ///
+    /// Returns the language ID as a 16-bit value, or an error if the request fails.
     pub async fn get_supported_language(&mut self) -> Result<u16, RequestError> {
         let packet = SetupPacket {
             request_type: RequestType::IN | RequestType::TYPE_STANDARD | RequestType::RECIPIENT_DEVICE,
@@ -240,6 +301,13 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(u16::from_le_bytes([buf[2], buf[3]]))
     }
 
+    /// Retrieves a string descriptor from the device.
+    ///
+    /// # Arguments
+    /// * `index` - The string descriptor index
+    /// * `lang_id` - The language ID for the string
+    ///
+    /// Returns the string as a UTF-8 encoded string, or an error if the request fails.
     pub async fn get_string(
         &mut self,
         index: crate::StringIndex,
@@ -303,6 +371,15 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(str)
     }
 
+    /// Retrieves a 1-byte current value from a UAC entity.
+    ///
+    /// # Arguments
+    /// * `control_selector` - The control selector (e.g., volume, mute)
+    /// * `channel` - The channel number (0 for master control)
+    /// * `entity` - The entity ID
+    /// * `interface` - The interface number
+    ///
+    /// Returns the current value as a u8, or an error if the request fails.
     pub async fn get_curr_entity1(
         &mut self,
         control_selector: u16,
@@ -328,6 +405,15 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(buf[0])
     }
 
+    /// Retrieves a 2-byte current value from a UAC entity.
+    ///
+    /// # Arguments
+    /// * `control_selector` - The control selector (e.g., volume, mute)
+    /// * `channel` - The channel number (0 for master control)
+    /// * `entity` - The entity ID
+    /// * `interface` - The interface number
+    ///
+    /// Returns the current value as a u16, or an error if the request fails.
     pub async fn get_curr_entity2(
         &mut self,
         control_selector: u16,
@@ -353,6 +439,15 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(u16::from_le_bytes([buf[0], buf[1]]))
     }
 
+    /// Retrieves a 4-byte current value from a UAC entity.
+    ///
+    /// # Arguments
+    /// * `control_selector` - The control selector (e.g., sampling frequency)
+    /// * `channel` - The channel number (0 for master control)
+    /// * `entity` - The entity ID
+    /// * `interface` - The interface number
+    ///
+    /// Returns the current value as a u32, or an error if the request fails.
     pub async fn get_curr_entity3(
         &mut self,
         control_selector: u16,
@@ -378,6 +473,15 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]))
     }
 
+    /// Retrieves the range of supported 1-byte values from a UAC entity.
+    ///
+    /// # Arguments
+    /// * `control_selector` - The control selector (e.g., volume, mute)
+    /// * `channel` - The channel number (0 for master control)
+    /// * `entity` - The entity ID
+    /// * `interface` - The interface number
+    ///
+    /// Returns a [`Layout1ParameterBlock`] containing the supported ranges, or an error if the request fails.
     pub async fn get_range_entity1(
         &mut self,
         control_selector: u16,
@@ -405,6 +509,15 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(layout)
     }
 
+    /// Retrieves the range of supported 2-byte values from a UAC entity.
+    ///
+    /// # Arguments
+    /// * `control_selector` - The control selector (e.g., volume, mute)
+    /// * `channel` - The channel number (0 for master control)
+    /// * `entity` - The entity ID
+    /// * `interface` - The interface number
+    ///
+    /// Returns a [`Layout2ParameterBlock`] containing the supported ranges, or an error if the request fails.
     pub async fn get_range_entity2(
         &mut self,
         control_selector: u16,
@@ -432,6 +545,15 @@ impl<H: UsbHostDriver> UacHandler<H> {
         Ok(layout)
     }
 
+    /// Retrieves the range of supported 4-byte values from a UAC entity.
+    ///
+    /// # Arguments
+    /// * `control_selector` - The control selector (e.g., sampling frequency)
+    /// * `channel` - The channel number (0 for master control)
+    /// * `entity` - The entity ID
+    /// * `interface` - The interface number
+    ///
+    /// Returns a [`Layout3ParameterBlock`] containing the supported ranges, or an error if the request fails.
     pub async fn get_range_entity3(
         &mut self,
         control_selector: u16,
@@ -463,8 +585,14 @@ impl<H: UsbHostDriver> UacHandler<H> {
 //-------------------------------------------------------
 // MARK: Output stream
 
+/// Represents an output audio stream to a USB Audio Class (UAC) device.
+///
+/// This struct manages the output and feedback channels for isochronous audio streaming,
+/// as well as timing and format information required for correct streaming.
 pub struct UacOut<H: UsbHostDriver> {
+    /// Output channel for isochronous audio streaming.
     pub output_channel: H::Channel<channel::Isochronous, channel::Out>,
+    /// Feedback channel for isochronous feedback endpoint.
     pub feedback_channel: H::Channel<channel::Isochronous, channel::In>,
     speed: Speed,
     samples_per_microframe: f32,
@@ -484,6 +612,11 @@ enum LockDelay {
 }
 
 impl<H: UsbHostDriver> UacOut<H> {
+    /// Starts the output audio stream, invoking the provided callback to fill each packet.
+    ///
+    /// The callback is called repeatedly with a mutable buffer for each packet to be sent.
+    /// Returns an error if the stream cannot be started or if a USB error occurs.
+
     // Maybe TODO: should this handle disconnects in some way?
     pub async fn output_stream(&mut self, mut callback: impl FnMut(&mut [u8])) -> Result<(), RequestError> {
         // First, update the sampling frequency
@@ -557,6 +690,9 @@ impl<H: UsbHostDriver> UacOut<H> {
         }
     }
 
+    /// Updates the current sampling frequency by reading from the feedback endpoint.
+    ///
+    /// Returns an error if the feedback cannot be read or parsed.
     pub async fn update_sampling_freq(&mut self) -> Result<(), RequestError> {
         let mut feedback_buffer = Aligned::<A4, _>([0; 4]);
         let len = self
@@ -611,7 +747,9 @@ impl<H: UsbHostDriver> UacOut<H> {
 }
 
 /// Parse USB feedback endpoint response into a floating point number.
-/// Returns the number of samples per USB frame (full-speed) or microframe (high-speed).
+///
+/// Returns the number of samples per USB frame (full-speed) or microframe (high-speed),
+/// or `None` if the data is invalid or the speed is unsupported.
 pub fn parse_feedback(speed: Speed, data: &[u8]) -> Option<f32> {
     match speed {
         Speed::Low => None, // Low-speed doesn't support isochronous transfers.
@@ -649,12 +787,16 @@ pub fn parse_feedback(speed: Speed, data: &[u8]) -> Option<f32> {
 // MARK: Response types
 // For the control interface
 
+/// Parameter block for range queries with 1-byte values.
 #[derive(Debug)]
 pub struct Layout1ParameterBlock {
+    /// List of supported value ranges.
     pub ranges: Vec<Range1, MAX_RANGES>,
 }
 
 impl Layout1ParameterBlock {
+    /// Attempts to parse a [`Layout1ParameterBlock`] from a byte slice.
+    /// Returns [`Some`] if parsing is successful, or [`None`] if the data is invalid.
     pub fn try_from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 5 {
             return None;
@@ -682,12 +824,16 @@ impl Layout1ParameterBlock {
     }
 }
 
+/// Parameter block for range queries with 2-byte values.
 #[derive(Debug)]
 pub struct Layout2ParameterBlock {
+    /// List of supported value ranges.
     pub ranges: Vec<Range2, MAX_RANGES>,
 }
 
 impl Layout2ParameterBlock {
+    /// Attempts to parse a [`Layout2ParameterBlock`] from a byte slice.
+    /// Returns [`Some`] if parsing is successful, or [`None`] if the data is invalid.
     pub fn try_from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 8 {
             return None;
@@ -715,12 +861,16 @@ impl Layout2ParameterBlock {
     }
 }
 
+/// Parameter block for range queries with 4-byte values.
 #[derive(Debug)]
 pub struct Layout3ParameterBlock {
+    /// List of supported value ranges.
     pub ranges: Vec<Range4, MAX_RANGES>,
 }
 
 impl Layout3ParameterBlock {
+    /// Attempts to parse a [`Layout3ParameterBlock`] from a byte slice.
+    /// Returns [`Some`] if parsing is successful, or [`None`] if the data is invalid.
     pub fn try_from_bytes(bytes: &[u8]) -> Option<Self> {
         if bytes.len() < 14 {
             return None;
@@ -748,23 +898,35 @@ impl Layout3ParameterBlock {
     }
 }
 
+/// Represents a range of 4-byte (u32) values.
 #[derive(Debug)]
 pub struct Range4 {
+    /// Minimum value in the range.
     pub min: u32,
+    /// Maximum value in the range.
     pub max: u32,
+    /// Step size between values in the range.
     pub step: u32,
 }
 
+/// Represents a range of 2-byte (u16) values.
 #[derive(Debug)]
 pub struct Range2 {
+    /// Minimum value in the range.
     pub min: u16,
+    /// Maximum value in the range.
     pub max: u16,
+    /// Step size between values in the range.
     pub step: u16,
 }
 
+/// Represents a range of 1-byte (u8) values.
 #[derive(Debug)]
 pub struct Range1 {
+    /// Minimum value in the range.
     pub min: u8,
+    /// Maximum value in the range.
     pub max: u8,
+    /// Step size between values in the range.
     pub step: u8,
 }

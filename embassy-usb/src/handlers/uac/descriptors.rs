@@ -1,3 +1,5 @@
+//! USB Audio Class (UAC) descriptor parsing and management.
+
 use super::codes::*;
 use crate::host::descriptor::{ConfigurationDescriptor, EndpointDescriptor, StringIndex, USBDescriptor};
 use core::iter::Peekable;
@@ -9,24 +11,44 @@ const MAX_CLOCK_DESCRIPTORS: usize = 8;
 const MAX_UNIT_DESCRIPTORS: usize = 16;
 const MAX_TERMINAL_DESCRIPTORS: usize = 16;
 
+/// Collection of audio interfaces representing a complete UAC audio function.
+///
+/// This struct contains all the interfaces that make up a USB Audio Class device,
+/// including the interface association descriptor, control interface, and streaming interfaces.
 #[derive(Debug, PartialEq)]
 pub struct AudioInterfaceCollection {
+    /// Interface association descriptor that groups the audio interfaces together.
     pub interface_association_descriptor: InterfaceAssociationDescriptor,
+    /// Audio control interface containing clocks, terminals, and units.
     pub control_interface: AudioControlInterface,
+    /// Collection of audio streaming interfaces for data transfer.
     pub audio_streaming_interfaces: Vec<AudioStreamingInterface, MAX_AUDIO_STREAMING_INTERFACES>,
 }
 
+/// Errors that can occur during audio interface parsing.
 #[derive(Debug, PartialEq)]
 pub enum AudioInterfaceError {
+    /// A buffer is full and cannot accept more items.
     BufferFull(&'static str),
+    /// No audio control interface was found in the configuration.
     MissingControlInterface,
+    /// Audio control interface header descriptor is missing.
     MissingControlInterfaceHeader,
+    /// An invalid descriptor was encountered during parsing.
     InvalidDescriptor,
+    /// No audio configuration was found in the device.
     NoAudioConfiguration,
+    /// Audio streaming class descriptor is missing.
     MissingAudioStreamingClassDescriptor,
 }
 
 impl AudioInterfaceCollection {
+    /// Attempts to parse an audio interface collection from a configuration descriptor.
+    ///
+    /// This method searches for an interface association descriptor for audio,
+    /// then parses the control interface and all streaming interfaces.
+    ///
+    /// Returns an [`AudioInterfaceCollection`] on success, or an [`AudioInterfaceError`] if parsing fails.
     pub fn try_from_configuration(cfg: &ConfigurationDescriptor) -> Result<Self, AudioInterfaceError> {
         let mut descriptors = cfg.iter_descriptors().peekable();
 
@@ -275,13 +297,23 @@ impl AudioInterfaceCollection {
     }
 }
 
+/// USB interface association descriptor for grouping related interfaces.
+///
+/// This descriptor is used to associate multiple interfaces that belong to the same function,
+/// such as an audio function with control and streaming interfaces.
 #[derive(Debug, PartialEq)]
 pub struct InterfaceAssociationDescriptor {
+    /// First interface number in the association.
     pub first_interface: u8,
+    /// Number of interfaces in the association.
     pub num_interfaces: u8,
+    /// Function class code.
     pub class: u8,
+    /// Function subclass code.
     pub subclass: u8,
+    /// Function protocol code.
     pub protocol: u8,
+    /// Index of string descriptor describing the function.
     pub interface_name: StringIndex,
 }
 
@@ -309,23 +341,33 @@ impl USBDescriptor for InterfaceAssociationDescriptor {
 }
 
 impl InterfaceAssociationDescriptor {
+    /// Returns true if this interface association is for an audio function.
     pub fn is_audio_association(&self) -> bool {
         self.class == AUDIO_FUNCTION && self.protocol == function_protocol::AF_VERSION_02_00
     }
 }
 
+/// USB interface descriptor for audio interfaces.
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[allow(missing_docs)]
 pub struct InterfaceDescriptor {
+    /// Length of this descriptor in bytes.
     pub len: u8,
+    /// Type of this descriptor. Must be 0x04.
     pub descriptor_type: u8,
+    /// Number of this interface.
     pub interface_number: u8,
+    /// Value used to select this alternate setting for the interface.
     pub alternate_setting: u8,
+    /// Number of endpoints used by this interface.
     pub num_endpoints: u8,
+    /// USB interface class code.
     pub interface_class: u8,
+    /// USB interface subclass code.
     pub interface_subclass: u8,
+    /// USB interface protocol code.
     pub interface_protocol: u8,
+    /// Index of string descriptor describing this interface.
     pub interface_name: StringIndex,
 }
 
@@ -358,20 +400,34 @@ impl USBDescriptor for InterfaceDescriptor {
 //--------------------------------------------------------------------------------------------------
 // Audio Control
 
+/// Audio control interface containing all control-related descriptors.
+///
+/// This struct contains the header descriptor, clock descriptors, unit descriptors,
+/// terminal descriptors, and optional interrupt endpoint descriptor.
 #[derive(Debug, PartialEq)]
 pub struct AudioControlInterface {
+    /// Interface descriptors for this control interface.
     pub interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
+    /// Audio control header descriptor.
     pub header_descriptor: AudioControlHeaderDescriptor,
+    /// Optional interrupt endpoint descriptor for control notifications.
     pub interrupt_endpoint_descriptor: Option<EndpointDescriptor>,
+    /// Map of clock descriptors indexed by clock ID.
     pub clock_descriptors: FnvIndexMap<u8, ClockDescriptor, MAX_CLOCK_DESCRIPTORS>,
+    /// Map of unit descriptors indexed by unit ID.
     pub unit_descriptors: FnvIndexMap<u8, UnitDescriptor, MAX_UNIT_DESCRIPTORS>,
+    /// Map of terminal descriptors indexed by terminal ID.
     pub terminal_descriptors: FnvIndexMap<u8, TerminalDescriptor, MAX_TERMINAL_DESCRIPTORS>,
 }
 
+/// Audio control header descriptor containing version and category information.
 #[derive(Debug, PartialEq)]
 pub struct AudioControlHeaderDescriptor {
-    pub audio_device_class: (u8, u8), // Major, minor version
+    /// Audio device class version (major, minor).
+    pub audio_device_class: (u8, u8),
+    /// Category of the audio device.
     pub category: u8,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u8,
 }
 
@@ -398,10 +454,14 @@ impl USBDescriptor for AudioControlHeaderDescriptor {
     }
 }
 
+/// Enumeration of clock descriptor types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClockDescriptor {
+    /// Clock source descriptor.
     Source(ClockSourceDescriptor),
+    /// Clock selector descriptor.
     Selector(ClockSelectorDescriptor),
+    /// Clock multiplier descriptor.
     Multiplier(ClockMultiplierDescriptor),
 }
 
@@ -421,6 +481,7 @@ impl ClockDescriptor {
         }
     }
 
+    /// Returns the clock ID for this descriptor.
     pub fn clock_id(&self) -> u8 {
         match self {
             Self::Source(desc) => desc.clock_id,
@@ -430,12 +491,18 @@ impl ClockDescriptor {
     }
 }
 
+/// Clock source descriptor defining an audio clock source.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockSourceDescriptor {
+    /// Unique identifier for this clock source.
     pub clock_id: u8,
+    /// Bitmap of clock source attributes.
     pub attributes_bitmap: u8,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u8,
+    /// Associated terminal ID.
     pub associated_terminal: u8,
+    /// Index of string descriptor describing this clock source.
     pub clock_name: StringIndex,
 }
 
@@ -464,11 +531,16 @@ impl USBDescriptor for ClockSourceDescriptor {
     }
 }
 
+/// Clock selector descriptor for selecting between multiple clock sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockSelectorDescriptor {
+    /// Unique identifier for this clock selector.
     pub clock_id: u8,
+    /// List of source clock IDs that can be selected.
     pub source_ids: Vec<u8, MAX_CLOCK_DESCRIPTORS>,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u8,
+    /// Index of string descriptor describing this clock selector.
     pub clock_name: StringIndex,
 }
 
@@ -499,11 +571,16 @@ impl ClockSelectorDescriptor {
     }
 }
 
+/// Clock multiplier descriptor for frequency multiplication.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClockMultiplierDescriptor {
+    /// Unique identifier for this clock multiplier.
     pub clock_id: u8,
+    /// Source clock ID.
     pub source_id: u8,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u8,
+    /// Index of string descriptor describing this clock multiplier.
     pub clock_name: StringIndex,
 }
 
@@ -531,9 +608,12 @@ impl USBDescriptor for ClockMultiplierDescriptor {
     }
 }
 
+/// Enumeration of terminal descriptor types.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TerminalDescriptor {
+    /// Input terminal descriptor.
     Input(InputTerminalDescriptor),
+    /// Output terminal descriptor.
     Output(OutputTerminalDescriptor),
 }
 
@@ -552,6 +632,7 @@ impl TerminalDescriptor {
         }
     }
 
+    /// Returns the terminal ID for this descriptor.
     pub fn terminal_id(&self) -> u8 {
         match self {
             Self::Input(desc) => desc.terminal_id,
@@ -559,6 +640,7 @@ impl TerminalDescriptor {
         }
     }
 
+    /// Returns the terminal type for this descriptor.
     pub fn terminal_type(&self) -> TerminalType {
         match self {
             Self::Input(desc) => desc.terminal_type,
@@ -566,6 +648,7 @@ impl TerminalDescriptor {
         }
     }
 
+    /// Returns the clock source ID associated with this terminal.
     pub fn clock_source_id(&self) -> u8 {
         match self {
             Self::Input(desc) => desc.clock_source_id,
@@ -573,6 +656,7 @@ impl TerminalDescriptor {
         }
     }
 
+    /// Returns the terminal name string index.
     pub fn terminal_name(&self) -> crate::StringIndex {
         match self {
             Self::Input(desc) => crate::StringIndex(desc.terminal_name),
@@ -581,57 +665,96 @@ impl TerminalDescriptor {
     }
 }
 
+/// Enumeration of terminal types as defined by the USB Audio Class specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TerminalType {
+    /// Unknown terminal type with raw value.
     Unknown(u16),
 
     // USB Terminal Types
+    /// USB undefined terminal.
     UsbUndefined,
+    /// USB streaming terminal.
     UsbStreaming,
+    /// USB vendor-specific terminal.
     UsbVendorSpecific,
 
     // Input Terminal Types
+    /// Input undefined terminal.
     InputUndefined,
+    /// Microphone terminal.
     Microphone,
+    /// Desktop microphone terminal.
     DesktopMicrophone,
+    /// Personal microphone terminal.
     PersonalMicrophone,
+    /// Omni-directional microphone terminal.
     OmniMicrophone,
+    /// Microphone array terminal.
     MicrophoneArray,
+    /// Processing microphone array terminal.
     ProcessingMicrophoneArray,
 
     // Output Terminal Types
+    /// Output undefined terminal.
     OutputUndefined,
+    /// Speaker terminal.
     Speaker,
+    /// Headphones terminal.
     Headphones,
+    /// Head-mounted display audio terminal.
     HeadMountedDisplay,
+    /// Desktop speaker terminal.
     DesktopSpeaker,
+    /// Room speaker terminal.
     RoomSpeaker,
+    /// Communication speaker terminal.
     CommunicationSpeaker,
+    /// Low frequency effects speaker terminal.
     LowFrequencyEffectsSpeaker,
 
     // Bi-directional Terminal Types
+    /// Bi-directional undefined terminal.
     BiDirectionalUndefined,
+    /// Handset terminal.
     Handset,
+    /// Headset terminal.
     Headset,
+    /// Speakerphone terminal.
     SpeakerPhone,
+    /// Echo suppressing speakerphone terminal.
     EchoSuppressing,
+    /// Echo canceling speakerphone terminal.
     EchoCanceling,
 
     // Telephony Terminal Types
+    /// Telephony undefined terminal.
     TelephonyUndefined,
+    /// Phone line terminal.
     PhoneLine,
+    /// Telephone terminal.
     Telephone,
+    /// Down line phone terminal.
     DownLinePhone,
 
     // External Terminal Types
+    /// External undefined terminal.
     ExternalUndefined,
+    /// Analog connector terminal.
     AnalogConnector,
+    /// Digital audio interface terminal.
     DigitalAudioInterface,
+    /// Line connector terminal.
     LineConnector,
+    /// Legacy audio connector terminal.
     LegacyAudioConnector,
+    /// SPDIF interface terminal.
     SpdifInterface,
+    /// DA 1394 stream terminal.
     Da1394Stream,
+    /// DVD audio stream terminal.
     DvdAudioStream,
+    /// AVC stream terminal.
     AvcStream,
 }
 
@@ -687,16 +810,26 @@ fn terminal_type_from_u16(terminal_type: u16) -> TerminalType {
     }
 }
 
+/// Input terminal descriptor for audio input sources.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputTerminalDescriptor {
+    /// Unique identifier for this input terminal.
     pub terminal_id: u8,
+    /// Type of this input terminal.
     pub terminal_type: TerminalType,
+    /// Associated terminal ID.
     pub associated_terminal_id: u8,
+    /// Clock source ID associated with this terminal.
     pub clock_source_id: u8,
+    /// Number of channels supported by this terminal.
     pub num_channels: u8,
+    /// Bitmap of channel configuration.
     pub channel_config_bitmap: u32,
+    /// Index of string descriptor for channel names.
     pub channel_names: StringIndex,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u16,
+    /// Index of string descriptor describing this terminal.
     pub terminal_name: StringIndex,
 }
 
@@ -729,14 +862,22 @@ impl USBDescriptor for InputTerminalDescriptor {
     }
 }
 
+/// Output terminal descriptor for audio output destinations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputTerminalDescriptor {
+    /// Unique identifier for this output terminal.
     pub terminal_id: u8,
+    /// Type of this output terminal.
     pub terminal_type: TerminalType,
+    /// Associated terminal ID.
     pub associated_terminal_id: u8,
+    /// Source unit or terminal ID.
     pub source_id: u8,
+    /// Clock source ID associated with this terminal.
     pub clock_source_id: u8,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u16,
+    /// Index of string descriptor describing this terminal.
     pub terminal_name: StringIndex,
 }
 
@@ -767,15 +908,22 @@ impl USBDescriptor for OutputTerminalDescriptor {
     }
 }
 
-// TODO: Implement unit descriptors
+/// Enumeration of unit descriptor types for audio processing units.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnitDescriptor {
+    /// Mixer unit with unit ID.
     Mixer(u8),
+    /// Selector unit with unit ID.
     Selector(u8),
+    /// Feature unit with unit ID.
     Feature(u8),
+    /// Processing unit with unit ID.
     Processing(u8),
+    /// Effect unit with unit ID.
     Effect(u8),
+    /// Sample rate converter unit with unit ID.
     SampleRateConverter(u8),
+    /// Extension unit with unit ID.
     Extension(u8),
 }
 
@@ -805,6 +953,7 @@ impl USBDescriptor for UnitDescriptor {
 }
 
 impl UnitDescriptor {
+    /// Returns the unit ID for this descriptor.
     pub fn unit_id(&self) -> u8 {
         match self {
             Self::Mixer(id) => *id,
@@ -821,24 +970,41 @@ impl UnitDescriptor {
 //--------------------------------------------------------------------------------------------------
 // Audio Streaming
 
+/// Audio streaming interface containing streaming-related descriptors.
+///
+/// This struct contains the interface descriptors, class descriptor, endpoint descriptors,
+/// and format type descriptor for an audio streaming interface.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStreamingInterface {
+    /// Interface descriptors for this streaming interface.
     pub interface_descriptors: Vec<InterfaceDescriptor, MAX_ALTERNATE_SETTINGS>,
+    /// Audio streaming class descriptor.
     pub class_descriptor: AudioStreamingClassDescriptor,
+    /// Main endpoint descriptor for audio data.
     pub endpoint_descriptor: Option<EndpointDescriptor>,
+    /// Optional feedback endpoint descriptor for clock synchronization.
     pub feedback_endpoint_descriptor: Option<EndpointDescriptor>,
+    /// Audio-specific endpoint descriptor.
     pub audio_endpoint_descriptor: Option<AudioEndpointDescriptor>,
+    /// Format type descriptor defining the audio format.
     pub format_type_descriptor: Option<FormatTypeDescriptor>,
     // TODO: Encoder, decoder descriptors
 }
 
+/// Audio streaming class descriptor containing format and channel information.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioStreamingClassDescriptor {
+    /// Terminal link ID connecting to the control interface.
     pub terminal_link_id: u8,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u8,
+    /// Audio format type supported by this interface.
     pub format: format_type::Format,
+    /// Number of channels supported.
     pub num_channels: u8,
+    /// Bitmap of channel configuration.
     pub channel_config_bitmap: u32,
+    /// Index of string descriptor for channel names.
     pub channel_name: StringIndex,
 }
 
@@ -874,11 +1040,16 @@ impl USBDescriptor for AudioStreamingClassDescriptor {
     }
 }
 
+/// Audio-specific endpoint descriptor containing audio endpoint attributes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioEndpointDescriptor {
+    /// Bitmap of endpoint attributes.
     pub attributes_bitmap: u8,
+    /// Bitmap of supported controls.
     pub controls_bitmap: u8,
+    /// Units for lock delay (1=milliseconds, 2=samples).
     pub lock_delay_units: u8,
+    /// Lock delay value in the specified units.
     pub lock_delay: u16,
 }
 
@@ -906,14 +1077,22 @@ impl USBDescriptor for AudioEndpointDescriptor {
     }
 }
 
+/// Enumeration of format type descriptors for different audio formats.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormatTypeDescriptor {
+    /// Type I format (PCM, PCM8, etc.).
     I(FormatTypeI),
+    /// Type II format (MPEG, AC-3, etc.).
     II(FormatTypeII),
+    /// Type III format (IEC1937_AC-3, IEC1937_MPEG-1_Layer1, etc.).
     III(FormatTypeIII),
+    /// Type IV format.
     IV,
+    /// Extended Type I format.
     ExtendedI(FormatTypeExtendedI),
+    /// Extended Type II format.
     ExtendedII(FormatTypeExtendedII),
+    /// Extended Type III format.
     ExtendedIII(FormatTypeExtendedIII),
 }
 
@@ -998,46 +1177,71 @@ impl FormatTypeDescriptor {
     }
 }
 
+/// Type I format descriptor for PCM-like formats.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatTypeI {
+    /// Size of each subslot in bytes.
     pub subslot_size: u8,
+    /// Bit resolution of the audio data.
     pub bit_resolution: u8,
 }
 
+/// Type II format descriptor for compressed formats.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatTypeII {
+    /// Maximum bit rate in bits per second.
     pub max_bit_rate: u16,
+    /// Number of slots per frame.
     pub slots_per_frame: u16,
 }
 
+/// Type III format descriptor for IEC formats.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatTypeIII {
+    /// Size of each subslot in bytes.
     pub subslot_size: u8,
+    /// Bit resolution of the audio data.
     pub bit_resolution: u8,
 }
 
+/// Extended Type I format descriptor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatTypeExtendedI {
+    /// Size of each subslot in bytes.
     pub subslot_size: u8,
+    /// Bit resolution of the audio data.
     pub bit_resolution: u8,
+    /// Length of the format-specific header.
     pub header_length: u8,
+    /// Size of control data.
     pub control_size: u8,
+    /// Sideband protocol identifier.
     pub sideband_protocol: u8,
 }
 
+/// Extended Type II format descriptor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatTypeExtendedII {
+    /// Maximum bit rate in bits per second.
     pub max_bit_rate: u16,
+    /// Number of samples per frame.
     pub samples_per_frame: u16,
+    /// Length of the format-specific header.
     pub header_length: u8,
+    /// Sideband protocol identifier.
     pub sideband_protocol: u8,
 }
 
+/// Extended Type III format descriptor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatTypeExtendedIII {
+    /// Size of each subslot in bytes.
     pub subslot_size: u8,
+    /// Bit resolution of the audio data.
     pub bit_resolution: u8,
+    /// Length of the format-specific header.
     pub header_length: u8,
+    /// Sideband protocol identifier.
     pub sideband_protocol: u8,
 }
 
