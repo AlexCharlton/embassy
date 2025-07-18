@@ -475,7 +475,7 @@ pub mod format_type {
         }
     }
 
-    #[derive(Debug, Clone, PartialEq)]
+    #[derive(Debug, Clone, PartialEq, Copy)]
     pub enum Format {
         Type1(Type1),
         Type2(Type2),
