@@ -638,10 +638,9 @@ impl<H: UsbHostDriver> UacOut<H> {
         // Readjust the max bytes per packet to be a multiple of the frame size
         let bytes_per_frame = self.bytes_per_sample * self.num_channels as usize;
         let max_samples_per_packet = self.max_bytes_per_packet / bytes_per_frame;
-        let max_bytes_per_packet = max_samples_per_packet * bytes_per_frame;
         trace!(
             "[UAC] Max bytes per packet: {}; max samples per packet: {}",
-            max_bytes_per_packet,
+            self.max_bytes_per_packet,
             max_samples_per_packet
         );
         let mut sample_accumulator = 0.0;
@@ -670,7 +669,7 @@ impl<H: UsbHostDriver> UacOut<H> {
             // trace!("[UAC] Bytes to send: {}", bytes_to_send);
             // Chunk the data if it's too large
             while bytes_to_send > 0 {
-                let num_bytes = max_bytes_per_packet.min(bytes_to_send);
+                let num_bytes = self.max_bytes_per_packet.min(bytes_to_send);
                 // Fill the buffer with data
                 let data = &mut output_buffer.as_mut_slice()[..num_bytes];
                 data.fill(0);
