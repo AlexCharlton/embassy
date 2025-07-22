@@ -694,12 +694,12 @@ impl<H: UsbHostDriver> UacOut<H> {
     /// Returns an error if the feedback cannot be read or parsed.
     pub async fn update_sampling_freq(&mut self) -> Result<(), RequestError> {
         let mut feedback_buffer = Aligned::<A4, _>([0; 4]);
-        let len = self
+        let _ = self
             .feedback_channel
             .request_in(feedback_buffer.as_mut_slice())
             .await
             .map_err(|e| RequestError::RequestFailed(e))?;
-        if let Some(samples_per_microframe) = parse_feedback(self.speed, &feedback_buffer.as_slice()[..len]) {
+        if let Some(samples_per_microframe) = parse_feedback(self.speed, &feedback_buffer.as_slice()) {
             self.samples_per_microframe = samples_per_microframe;
             trace!("[UAC] Samples per microframe: {}", self.samples_per_microframe);
         }
