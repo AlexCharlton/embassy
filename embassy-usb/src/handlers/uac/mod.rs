@@ -34,6 +34,10 @@
 pub mod codes;
 pub mod descriptors;
 
+use core::future::{poll_fn, Future};
+use core::pin::pin;
+use core::task::Poll;
+
 use crate::control::Request;
 
 use super::{EnumerationInfo, RegisterError};
@@ -616,9 +620,31 @@ impl<H: UsbHostDriver> UacOut<H> {
     ///
     /// The callback is called repeatedly with a mutable buffer for each packet to be sent.
     /// Returns an error if the stream cannot be started or if a USB error occurs.
+    pub async fn output_stream(
+        &mut self,
+        is_connected: impl Fn() -> bool,
+        callback: impl FnMut(&mut [u8]),
+    ) -> Result<(), RequestError> {
+        let mut output_stream_future = pin!(self.output_stream_inner(callback));
 
-    // Maybe TODO: should this handle disconnects in some way?
-    pub async fn output_stream(&mut self, mut callback: impl FnMut(&mut [u8])) -> Result<(), RequestError> {
+        poll_fn(|cx| {
+            // Check USB connection status first
+            if !is_connected() {
+                return Poll::Ready(Err(RequestError::DeviceDisconnected));
+            }
+
+            match output_stream_future.as_mut().poll(cx) {
+                Poll::Ready(result) => Poll::Ready(result),
+                Poll::Pending => {
+                    cx.waker().wake_by_ref();
+                    Poll::Pending
+                }
+            }
+        })
+        .await
+    }
+
+    async fn output_stream_inner(&mut self, mut callback: impl FnMut(&mut [u8])) -> Result<(), RequestError> {
         // First, update the sampling frequency
         self.update_sampling_freq().await?;
 
