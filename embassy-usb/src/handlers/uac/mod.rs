@@ -214,11 +214,12 @@ impl<H: UsbHostDriver> UacHandler<H> {
     /// Returns a [`UacOut`] object for audio output streaming.
     ///
     /// Returns an error if the output or feedback channel is not allocated or if the interface is unsupported.
-    pub fn output(&mut self) -> Result<UacOut<H>, RequestError> {
-        if self.output_channel.is_none() || self.feedback_channel.is_none() {
-            error!("[UAC] Output or feedback channel not allocated");
+    pub async fn output(&mut self) -> Result<UacOut<H>, RequestError> {
+        if self.output_channel.is_none() {
+            error!("[UAC] Output channel not allocated");
             return Err(RequestError::DeviceDisconnected);
         }
+
         let output_interface = self.output_interface();
         let num_channels = output_interface.class_descriptor.num_channels;
         let lock_delay = if let Some(desc) = &output_interface.audio_endpoint_descriptor {
@@ -239,12 +240,32 @@ impl<H: UsbHostDriver> UacHandler<H> {
             _ => return Err(RequestError::NoSupportedInterface),
         };
         let max_bytes_per_packet = output_interface.endpoint_descriptor.unwrap().max_packet_size as usize;
+        // Get the sampling frequency
+        let mut num_retries = 3;
+        let sampling_freq = loop {
+            let sampling_freq = self.get_sampling_freq(self.input_terminal().clock_source_id()).await;
+            if let Err(e) = sampling_freq {
+                num_retries -= 1;
+                if num_retries == 0 {
+                    error!("[UAC] Failed to get sampling frequency after 3 retries: {:#?}", e);
+                    return Err(e);
+                }
+                Timer::after(Duration::from_millis(10)).await;
+                continue;
+            }
+            break sampling_freq.unwrap();
+        };
+        let samples_per_microframe = sampling_freq as f32
+            / match self.speed {
+                Speed::High => 8000.0,
+                _ => 1000.0,
+            };
 
         Ok(UacOut::<H> {
             output_channel: self.output_channel.take().unwrap(),
-            feedback_channel: self.feedback_channel.take().unwrap(),
+            feedback_channel: self.feedback_channel.take(),
             speed: self.speed,
-            samples_per_microframe: 0.0,
+            samples_per_microframe,
             microframes_per_microsecond: 1.0 / (if self.speed == Speed::High { 125.0 } else { 1000.0 }),
             send_start: Instant::from_ticks(0),
             num_frames: 0,
@@ -597,7 +618,7 @@ pub struct UacOut<H: UsbHostDriver> {
     /// Output channel for isochronous audio streaming.
     pub output_channel: H::Channel<channel::Isochronous, channel::Out>,
     /// Feedback channel for isochronous feedback endpoint.
-    pub feedback_channel: H::Channel<channel::Isochronous, channel::In>,
+    pub feedback_channel: Option<H::Channel<channel::Isochronous, channel::In>>,
     speed: Speed,
     samples_per_microframe: f32,
     microframes_per_microsecond: f32,
@@ -659,7 +680,10 @@ impl<H: UsbHostDriver> UacOut<H> {
             .await
             .map_err(|e| RequestError::RequestFailed(e))?;
 
-        debug!("[UAC] Lock request sent, starting stream");
+        debug!(
+            "[UAC] Lock request sent, starting stream with sampling frequency: {} samples/microframe",
+            self.samples_per_microframe
+        );
 
         // Readjust the max bytes per packet to be a multiple of the frame size
         let bytes_per_frame = self.bytes_per_sample * self.num_channels as usize;
@@ -672,7 +696,7 @@ impl<H: UsbHostDriver> UacOut<H> {
         let mut sample_accumulator = 0.0;
         loop {
             // Does the sampling frequency need to be updated?
-            if self.last_feedback_time.elapsed() > Duration::from_millis(1) {
+            if self.feedback_channel.is_some() && self.last_feedback_time.elapsed() > Duration::from_millis(1) {
                 self.update_sampling_freq().await?;
             }
             let mut microframes_elapsed = self.microframes_elapsed_since_last_frame();
@@ -719,9 +743,15 @@ impl<H: UsbHostDriver> UacOut<H> {
     ///
     /// Returns an error if the feedback cannot be read or parsed.
     pub async fn update_sampling_freq(&mut self) -> Result<(), RequestError> {
+        if self.feedback_channel.is_none() {
+            return Ok(());
+        }
+
         let mut feedback_buffer = Aligned::<A4, _>([0; 4]);
         let _ = self
             .feedback_channel
+            .as_mut()
+            .unwrap()
             .request_in(feedback_buffer.as_mut_slice())
             .await
             .map_err(|e| RequestError::RequestFailed(e))?;
